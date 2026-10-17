@@ -57,7 +57,13 @@ function makeThrottle(limit = 10, windowMs = 10 * 60 * 1000) {
 
 export async function createApp({ dbFile, rootDir }) {
   const store = await Store.open({ file: dbFile });
-  if (process.env.ORGANIZER_PASSWORD && !(await store.hasPassword())) await store.setPassword(process.env.ORGANIZER_PASSWORD);
+  // A bad ORGANIZER_PASSWORD must not crash the app: report it on every API call instead.
+  let configError = null;
+  const envPassword = process.env.ORGANIZER_PASSWORD;
+  if (envPassword !== undefined && !(await store.hasPassword())) {
+    if (envPassword.trim().length < 6) configError = 'ORGANIZER_PASSWORD is shorter than 6 characters. Set a longer one in Vercel and redeploy.';
+    else await store.setPassword(envPassword.trim());
+  }
   const publicDir = path.join(rootDir, 'public');
   const sharedDir = path.join(rootDir, 'src', 'shared');
   const allowLogin = makeThrottle();
@@ -128,6 +134,7 @@ export async function createApp({ dbFile, rootDir }) {
   }
 
   async function handleApi(req, res, url) {
+    if (configError) throw new HttpError(500, configError);
     const route = routes.find((r) => r.method === req.method && r.pattern.test(url.pathname));
     if (!route) throw new HttpError(404, 'Not found.');
     const token = parseCookies(req.headers.cookie)[COOKIE];
@@ -177,8 +184,8 @@ export async function createApp({ dbFile, rootDir }) {
       send(res, 200, result ?? { ok: true });
     } catch (err) {
       const status = err.status ?? 500;
-      if (status === 500) console.error(err);
-      send(res, status, { error: status === 500 ? 'Something went wrong on the server.' : err.message });
+      if (status === 500 && !(err instanceof HttpError)) console.error(err);
+      send(res, status, { error: status === 500 && !(err instanceof HttpError) ? 'Something went wrong on the server.' : err.message });
     }
   }
 
