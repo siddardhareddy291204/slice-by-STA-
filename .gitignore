@@ -1,0 +1,9 @@
+node_modules
+data/*.db*
+public/shared
+.vercel
+.env*
+.agents
+skills-lock.json
+.DS_Store
+.claude
