@@ -303,7 +303,7 @@ export class Store {
     const dayId = byToken ? `(SELECT id FROM days WHERE share_token = ?)` : '?';
     const queries = [
       [`SELECT * FROM days WHERE ${where}`, key],
-      ['SELECT id, name FROM players'],
+      ['SELECT id, name, archived FROM players'],
       [`SELECT player_id FROM day_players WHERE day_id = ${dayId}`, key],
       [`SELECT * FROM matches WHERE day_id = ${dayId} ORDER BY seq`, key],
     ];
@@ -330,6 +330,11 @@ export class Store {
       potd: playerOfTheDay(standings),
     };
     if (organizer) {
+      // Everyone who could be put in a match: all active players, plus anyone already here.
+      view.roster = playerRows
+        .filter((r) => !Number(r.archived) || presentIds.includes(Number(r.id)))
+        .map((r) => ({ id: Number(r.id), name: r.name }))
+        .sort((a, b) => a.name.localeCompare(b.name));
       view.activity = activityRows.map((a) => ({
         id: Number(a.id),
         matchId: a.match_id == null ? null : Number(a.match_id),
@@ -365,10 +370,16 @@ export class Store {
     const ids = [...teamA, ...teamB].map(Number);
     if (ids.some((id) => !Number.isInteger(id))) throw new HttpError(400, 'Fill every player slot.');
     if (new Set(ids).size !== ids.length) throw new HttpError(400, 'A player can’t appear twice in the same match.');
+    // Any saved player can be picked; anyone not yet ticked as here gets added to the session.
+    const known = new Set((await this.all(`SELECT id FROM players WHERE id IN (${ids.map(() => '?').join(',')})`, ...ids)).map((r) => Number(r.id)));
+    if (ids.some((id) => !known.has(id))) throw new HttpError(400, 'One of these players no longer exists.');
     const present = new Set(await this.presentIds(day.id));
-    if (ids.some((id) => !present.has(id))) throw new HttpError(400, 'Only players marked present can be placed in a match.');
     if (!Number.isInteger(court) || court < 1 || court > day.courts) throw new HttpError(400, `Pick a court from 1 to ${day.courts}.`);
-    return { court, kind, teamA: teamA.map(Number), teamB: teamB.map(Number) };
+    return { court, kind, teamA: teamA.map(Number), teamB: teamB.map(Number), newcomers: ids.filter((id) => !present.has(id)) };
+  }
+
+  async markPresent(dayId, ids) {
+    for (const id of new Set(ids)) await this.run('INSERT OR IGNORE INTO day_players (day_id, player_id) VALUES (?, ?)', dayId, id);
   }
 
   async createMatches(dayId, list) {
@@ -384,6 +395,7 @@ export class Store {
       }
     }
     return this.tx(async (s) => {
+      await s.markPresent(dayId, lineups.flatMap((l) => l.newcomers));
       let seq = Number((await s.get('SELECT MAX(seq) AS s FROM matches WHERE day_id = ?', dayId)).s ?? 0) + 1;
       const ts = now();
       const created = [];
@@ -443,6 +455,7 @@ export class Store {
       const day = await s.dayRow(m.dayId);
       const l = await s.checkLineup(day, { court: m.court, kind: m.kind, teamA: m.teamA, teamB: m.teamB, ...input });
       if (l.kind !== m.kind && m.points) throw new HttpError(409, 'Undo the recorded points before switching singles and doubles.');
+      await s.markPresent(m.dayId, l.newcomers);
       const updated = await s.save(id, { court: l.court, kind: l.kind, teamA: l.teamA, teamB: l.teamB });
       if (m.status === 'completed') {
         const names = await s.playerNames();

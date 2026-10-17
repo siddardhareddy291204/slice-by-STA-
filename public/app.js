@@ -72,7 +72,7 @@ const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0
 const today = () => iso(new Date());
 const fmtDate = (date, opts = { weekday: 'short', day: 'numeric', month: 'short' }) => new Date(`${date}T12:00:00`).toLocaleDateString(undefined, opts);
 const fmtTime = (at) => new Date(at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-const name = (id) => S.view?.people?.[id] ?? '—';
+const name = (id) => S.view?.people?.[id] ?? S.view?.roster?.find((p) => p.id === id)?.name ?? 'Player';
 const first = (id) => name(id).split(' ')[0];
 const team = (ids) => ids.map(name).join(' & ');
 const pct = (r) => (r.played ? `${Math.round(r.winPct * 100)}%` : '–');
@@ -618,7 +618,7 @@ function courtsTab() {
 
 function suggestCard() {
   if (S.view.present.length < 2) {
-    return h`<div style="margin-top:16px">${empty('Who’s playing?', 'Mark at least two players.', h`<a class="btn btn-dark" href="#/day/${S.view.day.id}/setup">Add players</a>`)}</div>`;
+    return h`<div style="margin-top:16px">${empty('Who’s playing?', 'Tick who’s here, or just make a match.', h`<div class="row" style="justify-content:center;margin-top:14px"><a class="btn btn-light" href="#/day/${S.view.day.id}/setup">Who’s here</a><button class="btn btn-dark" data-act="manualMatch">${I.plus} Make a match</button></div>`)}</div>`;
   }
   return h`<section class="card stack" style="margin-top:16px">
     <div class="row between"><h2>Next round</h2><button class="btn btn-text btn-sm" data-act="manualMatch">${I.plus} Manual</button></div>
@@ -693,8 +693,7 @@ ACT.mode = ({ mode }) => {
 ACT.suggest = async () => {
   const s = await api(`/api/days/${S.view.day.id}/suggest`, { method: 'POST', body: { mode: S.mode, seed: Math.floor(Math.random() * 1e9) } });
   if (!s.matches.length) {
-    const free = S.view.present.filter((p) => !s.busy.includes(p.id));
-    toast(free.length ? `Only ${free.map((p) => first(p.id)).join(', ')} free — need two` : 'Everyone is on court or up next', true);
+    toast('Not enough free players for another round. Tap Manual to pick anyone.', true);
     return;
   }
   S.plan = { matches: s.matches.map((m) => ({ ...m, teamA: [...m.teamA], teamB: [...m.teamB] })), played: s.played, suggested: true };
@@ -718,21 +717,17 @@ function blankMatch() {
   return { court, kind, teamA: kind === 'doubles' ? [null, null] : [null], teamB: kind === 'doubles' ? [null, null] : [null], notes: [] };
 }
 
-// Busy = in a scheduled/live match other than the one being edited.
-function busyIds(exceptId) {
-  return new Set(S.view.matches.filter((m) => m.id !== exceptId && (m.status === 'live' || m.status === 'scheduled')).flatMap((m) => [...m.teamA, ...m.teamB]));
-}
 
 function planEditor(plan, key, exceptId = null) {
-  const busy = busyIds(exceptId);
   const inPlan = plan.matches.flatMap((m) => [...m.teamA, ...m.teamB]).filter((x) => x != null);
   const dupes = new Set(inPlan.filter((x, i) => inPlan.indexOf(x) !== i));
-  const sitting = S.view.present.filter((p) => !busy.has(p.id) && !inPlan.includes(p.id));
-  const played = plan.played ?? playedCounts();
   const isModal = key === 'modal';
+  // Everyone the club has, by name. Picking someone not ticked as here adds them to the session.
+  const everyone = S.view.roster ?? S.view.present;
   const slot = (i, side, j, val) => h`<select data-change="slot" data-plan="${key}" data-i="${i}" data-side="${side}" data-j="${j}" aria-label="Player">
       <option value="">Choose player</option>
-      ${S.view.present.map((p) => h`<option value="${p.id}" ${p.id === val ? 'selected' : ''}>${p.name} (${played[p.id] ?? 0})${busy.has(p.id) ? ' · busy' : ''}</option>`)}
+      ${everyone.map((p) => h`<option value="${p.id}" ${p.id === val ? 'selected' : ''}>${p.name}</option>`)}
+      <option value="new">+ New player</option>
     </select>`;
   const notes = (m) => {
     if (!plan.suggested || exceptId) return '';
@@ -758,8 +753,7 @@ function planEditor(plan, key, exceptId = null) {
       ${!isModal && plan.matches.length > 1 ? h`<button class="btn btn-text btn-sm" data-act="planRemove" data-i="${i}" style="margin-top:6px">Remove</button>` : ''}
     </div>`)}
     ${dupes.size ? h`<div class="error">${[...dupes].map(first).join(', ')} picked twice</div>` : ''}
-    ${isModal ? '' : h`<p class="note">Sitting out: <b>${sitting.length ? sitting.map((p) => first(p.id)).join(', ') : 'nobody'}</b></p>
-      <div class="row"><button class="btn btn-light btn-sm" data-act="planAdd">${I.plus} Match</button><span class="grow"></span><button class="btn btn-text btn-sm" data-act="planCancel">Cancel</button></div>
+    ${isModal ? '' : h`<div class="row"><button class="btn btn-light btn-sm" data-act="planAdd">${I.plus} Match</button><span class="grow"></span><button class="btn btn-text btn-sm" data-act="planCancel">Cancel</button></div>
       ${cta(`Add ${plan.matches.length} to Up next`, 'data-act="planSave"', 'btn-dark')}`}
   </section>`;
 }
@@ -767,7 +761,25 @@ function planEditor(plan, key, exceptId = null) {
 const planFor = (key) => (key === 'modal' ? S.modal.plan : S.plan);
 const repaintPlan = (key) => (key === 'modal' ? paintModal() : renderDay());
 
-CHANGE.slot = ({ plan, i, side, j }, el) => {
+CHANGE.slot = async ({ plan, i, side, j }, el) => {
+  if (el.value === 'new') {
+    const typed = prompt('New player’s name');
+    if (!typed?.trim()) {
+      repaintPlan(plan);
+      return;
+    }
+    try {
+      const p = await api('/api/players', { method: 'POST', body: { name: typed } });
+      S.view.roster = [...(S.view.roster ?? []), p].sort((a, b) => a.name.localeCompare(b.name));
+      S.view.people[p.id] = p.name;
+      planFor(plan).matches[i][side][j] = p.id;
+      toast(`${p.name} added`);
+    } catch (err) {
+      toast(err.message, true);
+    }
+    repaintPlan(plan);
+    return;
+  }
   planFor(plan).matches[i][side][j] = el.value ? Number(el.value) : null;
   repaintPlan(plan);
 };

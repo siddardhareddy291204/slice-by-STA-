@@ -73,9 +73,18 @@ test('organizer flow end to end, and the player link is read-only', async (t) =>
   assert.match(view.activity[0].summary, /6–0 → 4–6/);
   assert.equal(view.activity[0].by, 'Coach Sridhar');
 
+  // A saved player who wasn't ticked as here can still be put in a match, and joins the session.
+  const late = (await call('POST', '/api/players', { name: 'Rohan Das' })).data;
+  const made = await call('POST', `/api/days/${day.id}/matches`, { matches: [{ court: 1, kind: 'singles', teamA: [ids[0]], teamB: [late.id] }] });
+  assert.equal(made.status, 200);
+  view = (await call('GET', `/api/days/${day.id}`)).data;
+  assert.ok(view.present.some((p) => p.id === late.id));
+  assert.ok(view.roster.some((p) => p.id === late.id));
+
   // Player link: read-only, no activity, mutations refused without the organizer cookie.
   const pub = await fetch(`${base}/api/public/${day.shareToken}`).then((r) => r.json());
-  assert.equal(pub.matches.length, 1);
+  assert.equal(pub.matches.length, 2);
+  assert.equal(pub.roster, undefined);
   assert.equal(pub.activity, undefined);
   assert.equal(pub.day.scorer, 'Coach Sridhar');
   assert.equal((await call('POST', `/api/matches/${m.id}/result`, { score: { a: 6, b: 0 } }, { auth: false })).status, 401);
