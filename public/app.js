@@ -33,11 +33,17 @@ async function api(path, { method = 'GET', body } = {}) {
     credentials: 'same-origin',
   });
   const data = await res.json().catch(() => ({}));
+  if (res.ok && method !== 'GET') {
+    CACHE.delete('home');
+    CACHE.delete('players');
+  }
   if (!res.ok) {
     const err = new Error(data.error || `Request failed (${res.status})`);
     err.status = res.status;
     if (res.status === 401 && !['/api/login', '/api/password'].includes(path)) {
       S.me = { organizer: false, setupNeeded: false };
+      store('slice.me', JSON.stringify(S.me));
+      CACHE.clear();
       go('#/login');
     }
     throw err;
@@ -133,9 +139,37 @@ function empty(title, text, action = '') {
 
 const cta = (label, attrs, cls = 'btn-lime') => h`<button class="btn ${cls} cta btn-block" ${raw(attrs)}><span>${label}</span><span class="arrow">${I.arrow}</span></button>`;
 
+// ---------- Instant navigation ----------
+// Screens render immediately from the last copy we saw, then refresh in the
+// background and re-render only if something actually changed.
+const CACHE = new Map();
+let navId = 0;
+
+async function fresh(key, fetcher, render) {
+  const nav = navId;
+  const hit = CACHE.get(key);
+  if (hit) render(hit.data);
+  let data;
+  try {
+    data = await fetcher();
+  } catch (err) {
+    if (hit && err.status !== 401) return; // offline or flaky: keep showing the cached screen
+    throw err;
+  }
+  const json = JSON.stringify(data);
+  CACHE.set(key, { data, json });
+  if (nav === navId && (!hit || hit.json !== json)) render(data);
+}
+
+function prefetch(key, url) {
+  if (CACHE.has(key)) return;
+  api(url).then((data) => CACHE.set(key, { data, json: JSON.stringify(data) })).catch(() => {});
+}
+
 // ---------- Router ----------
 let pollTimer = null;
 async function route() {
+  navId += 1;
   clearInterval(pollTimer);
   S.modal = null;
   paintModal();
@@ -147,7 +181,21 @@ async function route() {
     return showPublic(pub[1]);
   }
   try {
-    if (!S.me) S.me = await api('/api/me');
+    if (!S.me) {
+      // Trust the last known sign-in so the first screen paints at once; verify in the background.
+      let saved = null;
+      try { saved = JSON.parse(readLocal('slice.me') ?? 'null'); } catch {}
+      if (saved?.organizer) {
+        S.me = saved;
+        api('/api/me').then((me) => {
+          store('slice.me', JSON.stringify(me));
+          if (!me.organizer) { S.me = me; route(); }
+        }).catch(() => {});
+      } else {
+        S.me = await api('/api/me');
+        store('slice.me', JSON.stringify(S.me));
+      }
+    }
     const hash = location.hash.slice(1) || '/';
     const viewToken = readLocal('slice.viewToken');
     if (!S.me.organizer && viewToken && isStandalone()) return location.replace(`/v/${viewToken}`);
@@ -241,22 +289,34 @@ function renderLogin() {
 FORM.login = async ({ password }) => {
   await api('/api/login', { method: 'POST', body: { password } });
   S.me = { organizer: true, setupNeeded: false };
+  store('slice.me', JSON.stringify(S.me));
   go('#/');
 };
 FORM.setup = async ({ password }) => {
   await api('/api/setup', { method: 'POST', body: { password } });
   S.me = { organizer: true, setupNeeded: false };
+  store('slice.me', JSON.stringify(S.me));
   go('#/');
 };
 ACT.logout = async () => {
   await api('/api/logout', { method: 'POST' });
   S.me = { organizer: false, setupNeeded: false };
+  store('slice.me', JSON.stringify(S.me));
+  CACHE.clear();
   go('#/login');
 };
 
 // ---------- Home ----------
 async function showHome() {
-  const [days, players] = await Promise.all([api('/api/days'), api('/api/players')]);
+  await fresh('home', () => Promise.all([api('/api/days'), api('/api/players')]), ([days, players]) => {
+    renderHome(days, players);
+    // Warm the screens people open next; Home already has the player list.
+    CACHE.set('players', { data: players, json: JSON.stringify(players) });
+    for (const d of days.slice(0, 3)) prefetch(`day:${d.id}`, `/api/days/${d.id}`);
+  });
+}
+
+function renderHome(days, players) {
   const byDate = new Map(days.map((d) => [d.date, d]));
   const todays = byDate.get(today());
   const start = new Date();
@@ -314,8 +374,10 @@ function sessionCard(d) {
 
 // ---------- Players ----------
 async function showPlayers() {
-  S.players = await api('/api/players');
-  renderPlayers();
+  await fresh('players', () => api('/api/players'), (players) => {
+    S.players = players;
+    renderPlayers();
+  });
 }
 
 function renderPlayers() {
@@ -393,9 +455,11 @@ ACT.archivePlayer = async ({ id, on }) => {
 
 // ---------- New day ----------
 async function showNewDay() {
-  S.players = await api('/api/players');
-  S.draft ??= { date: today(), title: '', format: 'set', courts: 2, playerIds: [], scorer: readLocal('slice.lastScorer') ?? '' };
-  renderNewDay();
+  await fresh('players', () => api('/api/players'), (players) => {
+    S.players = players;
+    S.draft ??= { date: today(), title: '', format: 'set', courts: 2, playerIds: [], scorer: readLocal('slice.lastScorer') ?? '' };
+    renderNewDay();
+  });
 }
 
 const formatCards = (current, change, nameAttr) =>
@@ -490,14 +554,19 @@ ACT.createDay = async () => {
 // ---------- Day ----------
 async function loadDay(id) {
   S.view = await api(`/api/days/${id}`);
+  CACHE.set(`day:${id}`, { data: S.view, json: JSON.stringify(S.view) });
   return S.view;
 }
 
 async function showDay(id, tab) {
   if (S.view?.day.id !== id) S.plan = null;
-  await loadDay(id);
   S.route = { id, tab };
-  renderDay();
+  // Switching tabs inside a session reuses what is already on screen.
+  if (S.view?.day.id === id && !CACHE.has(`day:${id}`)) CACHE.set(`day:${id}`, { data: S.view, json: JSON.stringify(S.view) });
+  await fresh(`day:${id}`, () => api(`/api/days/${id}`), (view) => {
+    S.view = view;
+    if (!S.modal) renderDay();
+  });
 }
 
 function dayHero(publicView = false) {
@@ -916,10 +985,14 @@ let pending = 0;
 let queue = Promise.resolve();
 
 async function showMatch(dayId, matchId) {
-  await loadDay(dayId);
   S.route = { id: dayId, tab: 'courts', matchId };
-  if (!S.view.matches.some((m) => m.id === matchId)) throw new Error('That match was removed.');
-  renderMatch();
+  if (S.view?.day.id === dayId && !CACHE.has(`day:${dayId}`)) CACHE.set(`day:${dayId}`, { data: S.view, json: JSON.stringify(S.view) });
+  await fresh(`day:${dayId}`, () => api(`/api/days/${dayId}`), (view) => {
+    if (pending) return; // never overwrite taps that are still on their way to the server
+    S.view = view;
+    if (!S.view.matches.some((m) => m.id === matchId)) throw new Error('That match was removed.');
+    if (!S.modal) renderMatch();
+  });
 }
 
 const current = () => S.view.matches.find((m) => m.id === S.route.matchId);

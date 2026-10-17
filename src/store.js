@@ -49,6 +49,16 @@ function toDay(r) {
   };
 }
 
+function groupBy(rows, key, map) {
+  const out = new Map();
+  for (const r of rows) {
+    const k = Number(r[key]);
+    if (!out.has(k)) out.set(k, []);
+    out.get(k).push(map(r));
+  }
+  return out;
+}
+
 export class Store {
   static async open(opts) {
     const store = new Store();
@@ -73,13 +83,27 @@ export class Store {
   // ---------- Organizer auth ----------
 
   async hasPassword() {
-    return !!(await this.get(`SELECT 1 AS x FROM settings WHERE key = 'password'`));
+    if (this.passwordKnown) return true;
+    this.passwordKnown = !!(await this.get(`SELECT 1 AS x FROM settings WHERE key = 'password'`));
+    return this.passwordKnown;
+  }
+
+  // Password set? Session valid? One round trip for both.
+  async authState(token) {
+    const row = await this.get(
+      `SELECT (SELECT 1 FROM settings WHERE key = 'password') AS pw,
+              (SELECT 1 FROM auth_sessions WHERE token = ? AND expires_at > ?) AS ok`,
+      token ?? '', now(),
+    );
+    if (row?.pw) this.passwordKnown = true;
+    return { hasPassword: !!row?.pw, organizer: !!row?.ok };
   }
 
   async setPassword(password) {
     if (typeof password !== 'string' || password.length < 6) throw new HttpError(400, 'Use at least 6 characters.');
     const salt = crypto.randomBytes(16);
     const hash = crypto.scryptSync(password, salt, 32);
+    this.passwordKnown = true;
     await this.run(
       `INSERT INTO settings (key, value) VALUES ('password', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
       `${salt.toString('hex')}:${hash.toString('hex')}`,
@@ -243,33 +267,55 @@ export class Store {
     });
   }
 
+  // Home screen data in one database round trip, grouped in memory.
   async listDays() {
-    const names = await this.playerNames();
-    const days = (await this.all('SELECT * FROM days ORDER BY date DESC, id DESC')).map(toDay);
-    const out = [];
-    for (const day of days) {
-      const matches = await this.matchesFor(day.id);
-      const present = await this.presentIds(day.id);
+    const [dayRows, playerRows, presentRows, matchRows] = await this.db.readMany([
+      ['SELECT * FROM days ORDER BY date DESC, id DESC'],
+      ['SELECT id, name FROM players'],
+      ['SELECT day_id, player_id FROM day_players'],
+      ['SELECT * FROM matches ORDER BY seq'],
+    ]);
+    const names = Object.fromEntries(playerRows.map((r) => [Number(r.id), r.name]));
+    const presentBy = groupBy(presentRows, 'day_id', (r) => Number(r.player_id));
+    const matchesBy = groupBy(matchRows, 'day_id', toMatch);
+    return dayRows.map(toDay).map((day) => {
+      const matches = matchesBy.get(day.id) ?? [];
+      const present = presentBy.get(day.id) ?? [];
       const standings = computeStandings(present.map((id) => ({ id, name: names[id] })), matches);
       for (const r of standings) r.name = names[r.playerId] ?? r.name;
       const potd = playerOfTheDay(standings);
-      out.push({
+      return {
         ...day,
         playerCount: present.length,
         matchCount: matches.length,
         completedCount: matches.filter((m) => m.status === 'completed').length,
         liveCount: matches.filter((m) => m.status === 'live').length,
         potd: potd.status === 'awarded' ? potd.winners.map((w) => w.name) : [],
-      });
-    }
-    return out;
+      };
+    });
   }
 
-  // Everything a screen needs for one day. Standings are recomputed from saved results every time.
-  async dayView(day, { organizer }) {
-    const names = await this.playerNames();
-    const presentIds = await this.presentIds(day.id);
-    const matches = await this.matchesFor(day.id);
+  // Everything a screen needs for one day, in one database round trip.
+  // Standings are recomputed from saved results every time.
+  async dayView(dayOrId, { organizer, byToken = false }) {
+    const where = byToken ? 'share_token = ?' : 'id = ?';
+    const key = typeof dayOrId === 'object' ? dayOrId.id : dayOrId;
+    const dayId = byToken ? `(SELECT id FROM days WHERE share_token = ?)` : '?';
+    const queries = [
+      [`SELECT * FROM days WHERE ${where}`, key],
+      ['SELECT id, name FROM players'],
+      [`SELECT player_id FROM day_players WHERE day_id = ${dayId}`, key],
+      [`SELECT * FROM matches WHERE day_id = ${dayId} ORDER BY seq`, key],
+    ];
+    if (organizer) queries.push([`SELECT * FROM activity WHERE day_id = ${dayId} ORDER BY id DESC LIMIT 200`, key]);
+    const [dayRows, playerRows, presentRows, matchRows, activityRows = []] = await this.db.readMany(queries);
+    if (!dayRows[0]) {
+      throw new HttpError(404, byToken ? 'This link doesn’t match a session. Ask for a fresh one in the group chat.' : 'That session doesn’t exist.');
+    }
+    const day = toDay(dayRows[0]);
+    const names = Object.fromEntries(playerRows.map((r) => [Number(r.id), r.name]));
+    const presentIds = presentRows.map((r) => Number(r.player_id));
+    const matches = matchRows.map(toMatch);
     const people = {};
     for (const id of presentIds) people[id] = names[id];
     for (const m of matches) for (const id of [...m.teamA, ...m.teamB]) people[id] = names[id] ?? 'Unknown player';
@@ -284,8 +330,7 @@ export class Store {
       potd: playerOfTheDay(standings),
     };
     if (organizer) {
-      const rows = await this.all('SELECT * FROM activity WHERE day_id = ? ORDER BY id DESC LIMIT 200', day.id);
-      view.activity = rows.map((a) => ({
+      view.activity = activityRows.map((a) => ({
         id: Number(a.id),
         matchId: a.match_id == null ? null : Number(a.match_id),
         matchLabel: a.match_label ?? null,

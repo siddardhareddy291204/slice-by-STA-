@@ -1,6 +1,6 @@
 // Slice service worker: makes the app installable and keeps it opening on a
 // patchy courtside connection. API calls always go to the network.
-const VERSION = 'slice-v2';
+const VERSION = 'slice-v3';
 const SHELL = ['/', '/index.html', '/app.css', '/app.js', '/shared/scoring.js', '/shared/standings.js', '/shared/scheduler.js', '/shared/names.js', '/icon.svg', '/manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
@@ -25,12 +25,19 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Everything else: fresh when online, cached when not. Page routes fall back to the app shell.
-  e.respondWith(fetch(e.request).then((res) => {
-    if (res.ok) {
-      const copy = res.clone();
-      caches.open(VERSION).then((c) => c.put(e.request, copy));
+  // App shell: answer from the cache at once and refresh it in the background
+  // (stale-while-revalidate), so opening Slice never waits on the network.
+  const key = e.request.mode === 'navigate' ? '/index.html' : e.request;
+  e.respondWith(caches.open(VERSION).then(async (cache) => {
+    const hit = await cache.match(key);
+    const update = fetch(e.request).then((res) => {
+      if (res.ok) cache.put(key, res.clone());
+      return res;
+    });
+    if (hit) {
+      e.waitUntil(update.catch(() => {}));
+      return hit;
     }
-    return res;
-  }).catch(() => caches.match(e.request).then((hit) => hit || (e.request.mode === 'navigate' ? caches.match('/index.html') : Response.error()))));
+    return update.catch(() => Response.error());
+  }));
 });

@@ -96,6 +96,8 @@ async function openLocal(file) {
     kind: 'sqlite',
     async all(sql, ...p) { return raw.prepare(sql).all(...p); },
     async get(sql, ...p) { return raw.prepare(sql).get(...p); },
+    // Several reads at once: [[sql, ...params], ...] -> [rows, ...]
+    async readMany(queries) { return queries.map(([sql, ...p]) => raw.prepare(sql).all(...p)); },
     async run(sql, ...p) {
       const r = raw.prepare(sql).run(...p);
       return { changes: Number(r.changes), lastInsertRowid: Number(r.lastInsertRowid) };
@@ -129,6 +131,11 @@ function wrapLibsql(exec, extra) {
   const args = (p) => p.map((v) => (v === undefined ? null : v));
   return {
     async all(sql, ...p) { return (await exec({ sql, args: args(p) })).rows; },
+    async readMany(queries) {
+      const out = [];
+      for (const [sql, ...p] of queries) out.push((await exec({ sql, args: args(p) })).rows);
+      return out;
+    },
     async get(sql, ...p) { return (await exec({ sql, args: args(p) })).rows[0]; },
     async run(sql, ...p) {
       const r = await exec({ sql, args: args(p) });
@@ -145,6 +152,11 @@ async function openLibsql(url, authToken) {
   const client = createClient({ url, authToken });
   const db = wrapLibsql((q) => client.execute(q), {
     kind: 'libsql',
+    async readMany(queries) {
+      const args = (p) => p.map((v) => (v === undefined ? null : v));
+      const results = await client.batch(queries.map(([sql, ...p]) => ({ sql, args: args(p) })), 'read');
+      return results.map((r) => r.rows);
+    },
     async exec(sql) { await client.executeMultiple(sql); },
     async tx(fn) {
       const t = await client.transaction('write');
