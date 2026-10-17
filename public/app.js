@@ -140,6 +140,7 @@ async function route() {
   S.modal = null;
   paintModal();
   window.scrollTo(0, 0);
+  if (location.pathname === '/install') return renderInstall();
   const pub = location.pathname.match(/^\/v\/([\w-]+)/);
   if (pub) {
     store('slice.viewToken', pub[1]);
@@ -231,6 +232,7 @@ function renderLogin() {
         <button class="go" type="submit" aria-label="${setup ? 'Save password' : 'Sign in'}">${I.arrow}</button>
       </div>
       <div class="error" data-error hidden></div>
+      <a class="foot small install-link" href="/install">Get Slice on your phone</a>
       <p class="foot small">${readLocal('slice.viewToken') ? h`Just following along? <a href="/v/${readLocal('slice.viewToken')}">Open the live view</a>` : 'Just following along? Open the view link from your group chat.'}</p>
     </form>
   </div>`);
@@ -1295,7 +1297,11 @@ function bindIntroSwipe() {
 
 // ---------- Install (everyone in the group keeps Slice on their phone) ----------
 let installEvent = null;
-const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+const UA = navigator.userAgent;
+const isIOS = /iphone|ipad|ipod/i.test(UA) || (/Macintosh/.test(UA) && navigator.maxTouchPoints > 1);
+const isAndroid = /android/i.test(UA);
+const isIOSSafari = isIOS && !/CriOS|FxiOS|EdgiOS|OPiOS|GSA\//.test(UA);
+const installUrl = () => `${location.origin}/install`;
 function isStandalone() {
   return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 }
@@ -1304,8 +1310,8 @@ const canInstall = () => !isStandalone() && (installEvent || isIOS);
 function installTip() {
   if (!canInstall() || seen('tip.install')) return '';
   return h`<div class="tip install" role="note"><div class="grow"><b>Keep Slice on your phone</b>
-    <p>${installEvent ? 'One tap and it opens like an app.' : 'Tap Share, then Add to Home Screen.'}</p>
-    ${installEvent ? h`<button class="btn btn-lime btn-sm" data-act="install" style="margin-top:10px">Install</button>` : ''}</div>
+    <p>${installEvent ? 'One tap and it opens like an app.' : 'Add it to your home screen in three taps.'}</p>
+    ${installEvent ? h`<button class="btn btn-lime btn-sm" data-act="install" style="margin-top:10px">Install</button>` : h`<a class="btn btn-lime btn-sm" href="/install" style="margin-top:10px">Show me how</a>`}</div>
     <button class="circle" data-act="dismissTip" data-key="install" aria-label="Dismiss">${I.x}</button></div>`;
 }
 
@@ -1313,21 +1319,85 @@ window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   installEvent = e;
   document.querySelectorAll('.install-slot').forEach((el) => (el.innerHTML = part(installTip())));
+  if (location.pathname === '/install') renderInstall();
 });
 window.addEventListener('appinstalled', () => {
   installEvent = null;
   markSeen('tip.install');
   document.querySelectorAll('.install-slot').forEach((el) => (el.innerHTML = ''));
+  if (location.pathname === '/install') renderInstall();
 });
 
 ACT.install = async () => {
   if (!installEvent) {
-    toast('Tap Share, then Add to Home Screen');
+    location.href = '/install';
     return;
   }
   installEvent.prompt();
   await installEvent.userChoice;
   installEvent = null;
+};
+
+// /install: one link for the group chat. Android gets a real Install button,
+// iPhone gets the Share, Add to Home Screen steps.
+const shareIcon = svg('<path d="M12 3v12"/><path d="M8 7l4-4 4 4"/><path d="M5 11v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8"/>');
+const moreIcon = svg('<circle cx="12" cy="5" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="19" r="1.4" fill="currentColor"/>');
+const addIcon = svg('<rect x="4" y="4" width="16" height="16" rx="4"/><path d="M12 8v8M8 12h8"/>');
+
+function installSteps(steps) {
+  return h`<ol class="install-steps">${steps.map(([icon, text]) => h`<li><span class="ic">${icon}</span><span>${text}</span></li>`)}</ol>`;
+}
+
+function renderInstall() {
+  const viewToken = readLocal('slice.viewToken');
+  const openHref = viewToken ? `/v/${viewToken}` : '/';
+  let body;
+  if (isStandalone()) {
+    body = h`<h2>Slice is on this phone</h2><p class="note">Open it from your home screen any time.</p>
+      <a class="btn btn-lime cta btn-block" href="${openHref}"><span>Open Slice</span><span class="arrow">${I.arrow}</span></a>`;
+  } else if (installEvent) {
+    body = h`<h2>Install Slice</h2><p class="note">It sits on your home screen and opens full screen, like any app.</p>
+      ${cta('Install', 'data-act="install"')}`;
+  } else if (isIOS && !isIOSSafari) {
+    body = h`<h2>Open this page in Safari</h2><p class="note">iPhone can only add apps to the home screen from Safari.</p>
+      ${installSteps([[I.share, 'Copy this link'], [I.arrow, 'Paste it into Safari'], [addIcon, 'Follow the steps there']])}
+      <button class="btn btn-dark btn-block" data-act="copyInstall">Copy link</button>`;
+  } else if (isIOS) {
+    body = h`<h2>Add Slice to your iPhone</h2>
+      ${installSteps([[shareIcon, h`Tap <b>Share</b> in Safari’s toolbar`], [addIcon, h`Scroll and tap <b>Add to Home Screen</b>`], [I.check, h`Tap <b>Add</b>`]])}
+      <p class="note">Slice then opens from its own icon, full screen.</p>`;
+  } else if (isAndroid) {
+    body = h`<h2>Add Slice to your phone</h2>
+      ${installSteps([[moreIcon, h`Open Chrome’s <b>menu</b> (three dots)`], [addIcon, h`Tap <b>Install app</b> or <b>Add to Home screen</b>`], [I.check, h`Tap <b>Install</b>`]])}`;
+  } else {
+    body = h`<h2>Open this on your phone</h2><p class="note">Send yourself this link, open it on the phone, and follow the steps for iPhone or Android.</p>
+      <div class="share-box">${installUrl()}</div>
+      <button class="btn btn-dark btn-block" data-act="copyInstall">Copy link</button>`;
+  }
+  paint(h`<div class="install-page photo" style="${photo('hero-signin.jpg')}">
+    <div class="head"><img src="/icon-192.png" alt="" width="84" height="84"><h1>Slice</h1><p class="sub">Sridhar’s Tennis Academy</p></div>
+    <section class="sheet-card stack">${body}</section>
+  </div>`);
+}
+
+ACT.shareInstall = async () => {
+  const url = installUrl();
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: 'Slice', text: 'Get Slice on your phone', url });
+      return;
+    } catch { /* fall back to copying */ }
+  }
+  ACT.copyInstall();
+};
+
+ACT.copyInstall = async () => {
+  try {
+    await navigator.clipboard.writeText(installUrl());
+    toast('Link copied');
+  } catch {
+    prompt('Copy this link:', installUrl());
+  }
 };
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
@@ -1353,8 +1423,11 @@ function renderSettings() {
       <button data-act="resetTips">${I.star}<span class="grow">Show tips and checklist again</span>${I.arrow}</button>
     </div>
 
-    ${canInstall() ? h`<div class="section-head"><h2>This phone</h2></div>
-    <div class="card list-actions"><button data-act="install">${I.arrow}<span class="grow">Add Slice to the home screen</span></button></div>` : ''}
+    <div class="section-head"><h2>Get the app</h2></div>
+    <div class="card list-actions">
+      ${isStandalone() ? '' : h`<button data-act="install">${addIcon}<span class="grow">Add Slice to this phone</span>${I.arrow}</button>`}
+      <button data-act="shareInstall">${I.share}<span class="grow">Send the install link to the group</span>${I.arrow}</button>
+    </div>
     <div class="section-head"><h2>Account</h2></div>
     <div class="card list-actions">
       <button data-act="logout">${I.out}<span class="grow">Sign out of this device</span></button>

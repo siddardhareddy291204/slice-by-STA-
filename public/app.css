@@ -477,3 +477,17 @@ input.glass-input::placeholder { color: rgba(255, 255, 255, 0.6); }
   .cta .arrow { background: #18231a; }
   .tabbar { background: rgba(30, 42, 30, 0.9); }
 }
+
+/* ---------- Install page ---------- */
+.install-page { min-height: 100dvh; display: flex; flex-direction: column; padding: calc(18px + env(safe-area-inset-top)) 16px calc(20px + env(safe-area-inset-bottom)); --pos: 50% 40%; }
+.install-page .head { text-align: center; margin-top: 6vh; }
+.install-page .head img { border-radius: 22px; box-shadow: 0 16px 40px -12px rgba(0, 0, 0, 0.6); }
+.install-page h1 { color: #fff; font-size: 2.4rem; margin-top: 14px; letter-spacing: -0.045em; }
+.install-page .sub { color: rgba(255, 255, 255, 0.8); margin-top: 4px; letter-spacing: 0; }
+.sheet-card { margin-top: auto; background: var(--bg); color: var(--ink); border-radius: var(--r-xl); padding: 22px 18px; box-shadow: 0 20px 50px -20px rgba(0, 0, 0, 0.6); max-width: 528px; width: 100%; align-self: center; }
+.install-steps { list-style: none; margin: 4px 0 0; padding: 0; counter-reset: step; }
+.install-steps li { display: flex; align-items: center; gap: 14px; padding: 12px 0; font-size: 1rem; letter-spacing: -0.005em; }
+.install-steps li + li { border-top: 1px solid var(--line); }
+.install-steps .ic { width: 40px; height: 40px; border-radius: 12px; background: var(--forest); color: var(--lime); display: grid; place-items: center; flex: none; }
+.install-steps .ic svg { width: 20px; height: 20px; }
+.install-link { display: block; color: var(--lime) !important; font-weight: 650; text-decoration: none; margin-top: 4px; }

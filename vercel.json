@@ -12,6 +12,10 @@
     {
       "source": "/v/(.*)",
       "destination": "/index.html"
+    },
+    {
+      "source": "/install",
+      "destination": "/index.html"
     }
   ],
   "headers": [

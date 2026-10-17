@@ -47,7 +47,7 @@ npm test         # scoring, standings, scheduler and API tests
 
 Slice is community-run, not an admin tool. The group shares one **club password**, so anyone who knows it can set up a session or score. Everyone else just opens the **view link**. There are no roles or permissions to manage. A session can note who is **scoring today** (just a name, editable in Setup), and that name appears on the live scorer and the player view and is stamped on every result change in the Log.
 
-**Install on phones:** Slice is a PWA. Open it and choose *Add to Home Screen* (iOS: Share → Add to Home Screen; Android shows an Install button in the app). It opens full screen with its own icon, keeps working on patchy courtside signal, and a phone that has opened a view link reopens straight to it.
+**Install on phones:** Slice is a PWA. Share `/install` (e.g. `https://slice-tennis-bice.vercel.app/install`) in the group chat: Android gets a one-tap Install button, iPhone gets the Safari Share → Add to Home Screen steps, and other iPhone browsers are told to open it in Safari. It opens full screen with its own icon, keeps working on patchy courtside signal, and a phone that has opened a view link reopens straight to it.
 
 ## Rules implemented
 

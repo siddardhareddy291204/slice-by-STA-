@@ -161,7 +161,7 @@ export async function createApp({ dbFile, rootDir }) {
 
   function serveStatic(req, res, url) {
     const p = decodeURIComponent(url.pathname);
-    if (p === '/' || p.startsWith('/v/')) return serveFile(res, path.join(publicDir, 'index.html'));
+    if (p === '/' || p === '/install' || p.startsWith('/v/')) return serveFile(res, path.join(publicDir, 'index.html'));
     const [base, rel] = p.startsWith('/shared/') ? [sharedDir, p.slice('/shared/'.length)] : [publicDir, p.slice(1)];
     const file = path.normalize(path.join(base, rel));
     if (!file.startsWith(base + path.sep)) {
