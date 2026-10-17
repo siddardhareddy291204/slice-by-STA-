@@ -78,9 +78,11 @@ const team = (ids) => ids.map(name).join(' & ');
 const pct = (r) => (r.played ? `${Math.round(r.winPct * 100)}%` : '–');
 const signed = (n) => (n > 0 ? `+${n}` : n < 0 ? `−${Math.abs(n)}` : '0');
 const avg = (r) => (r.played ? signed(Math.round(r.avgDiff * 10) / 10) : '–');
+// Bump when photos are replaced so phones drop their cached copies.
+const IMG_VERSION = 2;
 const photo = (spec) => {
   const [file, ...rest] = spec.split(';');
-  return [`--img:url(/img/${file})`, ...rest].join(';');
+  return [`--img:url(/img/${file}?v=${IMG_VERSION})`, ...rest].join(';');
 };
 
 const svg = (d, extra = '') => raw(`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`);

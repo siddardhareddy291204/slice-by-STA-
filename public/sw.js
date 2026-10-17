@@ -1,6 +1,6 @@
 // Slice service worker: makes the app installable and keeps it opening on a
 // patchy courtside connection. API calls always go to the network.
-const VERSION = 'slice-v3';
+const VERSION = 'slice-v4';
 const SHELL = ['/', '/index.html', '/app.css', '/app.js', '/shared/scoring.js', '/shared/standings.js', '/shared/scheduler.js', '/shared/names.js', '/icon.svg', '/manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
