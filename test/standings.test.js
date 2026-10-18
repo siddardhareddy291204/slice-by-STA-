@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeStandings, playerOfTheDay } from '../src/shared/standings.js';
+import { computeStandings, playerOfTheDay, pairOfTheDay, sessionAwards, computeMonthlyStandings, monthlyAwards } from '../src/shared/standings.js';
 import { suggestRound } from '../src/shared/scheduler.js';
 
 const P = (...names) => names.map((name, i) => ({ id: i + 1, name }));
@@ -12,6 +12,33 @@ test('doubles results count for both partners, with score differential', () => {
   const rows = computeStandings(P('Asha', 'Vikram', 'Meera', 'Arjun'), [done([1, 2], [3, 4], 6, 3)]);
   for (const id of [1, 2]) assert.deepEqual([row(rows, id).wins, row(rows, id).diff], [1, 3]);
   for (const id of [3, 4]) assert.deepEqual([row(rows, id).losses, row(rows, id).diff], [1, -3]);
+});
+
+test('standings expose games won for champion and consolation decisions', () => {
+  const rows = computeStandings(P('Asha', 'Vikram', 'Meera', 'Arjun'), [
+    done([1], [2], 6, 4), done([1], [3], 6, 0), done([2], [4], 6, 1), done([3], [2], 6, 0),
+  ]);
+  assert.equal(row(rows, 1).gamesWon, 12);
+  assert.equal(row(rows, 2).gamesWon, 10);
+  const awards = sessionAwards(rows);
+  assert.deepEqual(awards.champions.winners.map((x) => x.name), ['Asha']);
+  assert.deepEqual(awards.consolation.winners.map((x) => x.name), ['Vikram']);
+});
+
+test('monthly recognition requires ten distinct participation days and supports both win measures', () => {
+  const players = P('Asha', 'Vikram');
+  const sessions = Array.from({ length: 10 }, (_, i) => ({
+    date: `2026-10-${String(i + 1).padStart(2, '0')}`,
+    format: 'set',
+    presentIds: [1, 2],
+    matches: [done([1], [2], 6, i === 0 ? 0 : 4)],
+  }));
+  const rows = computeMonthlyStandings(players, sessions);
+  assert.equal(row(rows, 1).participationDays, 10);
+  assert.equal(monthlyAwards(rows).games.winners[0].name, 'Asha');
+  assert.equal(monthlyAwards(rows).matches.winners[0].name, 'Asha');
+  const pending = computeMonthlyStandings(players, sessions.slice(0, 9));
+  assert.equal(monthlyAwards(pending).games.status, 'pending');
 });
 
 test('incomplete, live and scheduled matches are not wins or losses', () => {
@@ -65,6 +92,23 @@ test('a full tie shares the title', () => {
   assert.equal(potd.shared, true);
   assert.deepEqual(potd.winners.map((w) => w.name).sort(), ['Asha', 'Vikram']);
   assert.deepEqual(rows.slice(0, 2).map((r) => r.rank), [1, 1]);
+});
+
+test('Pair of the Day uses completed doubles partnerships and shares exact ties', () => {
+  const players = P('Asha', 'Vikram', 'Meera', 'Arjun', 'Priya', 'Rohan');
+  const matches = [
+    { ...done([1, 2], [3, 4], 6, 2), kind: 'doubles' },
+    { ...done([1, 2], [5, 6], 6, 4), kind: 'doubles' },
+    { ...done([3, 4], [5, 6], 6, 0), kind: 'doubles', status: 'incomplete' },
+    { ...done([3], [4], 6, 0), kind: 'singles' },
+  ];
+  const pair = pairOfTheDay(players, matches);
+  assert.deepEqual(pair.winners[0].names, ['Asha', 'Vikram']);
+  assert.equal(pair.winners[0].played, 2);
+  assert.equal(pairOfTheDay(players, matches.slice(2)).status, 'pending');
+  const tie = pairOfTheDay(players, [{ ...done([1, 2], [3, 4], 6, 4), kind: 'doubles' }, { ...done([5, 6], [3, 4], 6, 4), kind: 'doubles' }]);
+  assert.equal(tie.shared, true);
+  assert.equal(tie.winners.length, 2);
 });
 
 test('standings are repeatable regardless of match order', () => {

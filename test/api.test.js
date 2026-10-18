@@ -89,4 +89,64 @@ test('organizer flow end to end, and the player link is read-only', async (t) =>
   assert.equal(pub.day.scorer, 'Coach Sridhar');
   assert.equal((await call('POST', `/api/matches/${m.id}/result`, { score: { a: 6, b: 0 } }, { auth: false })).status, 401);
   assert.equal((await call('GET', '/api/players', null, { auth: false })).status, 401);
+
+  // History can browse a month without mixing in sessions from other dates.
+  const sameDate = (await call('POST', '/api/days', { date: '2026-10-17', format: 'mtb', courts: 1, playerIds: ids })).data;
+  const past = (await call('POST', '/api/days', { date: '2026-09-30', format: 'mtb', courts: 1, playerIds: ids })).data;
+  const [pastMatch] = (await call('POST', `/api/days/${past.id}/matches`, { matches: [{ court: 1, kind: 'singles', teamA: [ids[0]], teamB: [ids[1]] }] })).data;
+  await call('POST', `/api/matches/${pastMatch.id}/result`, { score: { a: 10, b: 8 } });
+  const october = (await call('GET', '/api/days?month=2026-10')).data;
+  const september = (await call('GET', '/api/days?month=2026-09')).data;
+  assert.deepEqual(october.map((d) => d.id).sort(), [day.id, sameDate.id].sort());
+  assert.deepEqual(september.map((d) => d.id), [past.id]);
+  assert.equal(september[0].completedCount, 1);
+  assert.equal((await call('GET', '/api/days?month=2026-13')).status, 400);
+  const monthly = await call('GET', '/api/monthly?month=2026-10');
+  assert.equal(monthly.status, 200);
+  assert.equal(monthly.data.month, '2026-10');
+  assert.equal(monthly.data.awards.games.status, 'pending');
+
+  // Session schedule, finish state and both awards survive a fresh API read.
+  assert.equal((await call('PATCH', `/api/days/${day.id}`, { date: '2026-10-18', startTime: '08:30', endTime: '11:30' })).status, 200);
+  assert.equal((await call('PATCH', `/api/days/${day.id}`, { startTime: '12:00', endTime: '11:30' })).status, 400);
+  assert.equal((await call('PATCH', `/api/days/${day.id}`, { date: '2026-02-30' })).status, 400);
+  assert.equal((await call('POST', `/api/days/${day.id}/finish`)).status, 200);
+  view = (await call('GET', `/api/days/${day.id}`)).data;
+  assert.equal(view.day.date, '2026-10-18');
+  assert.equal(view.day.startTime, '08:30');
+  assert.equal(view.day.endTime, '11:30');
+  assert.ok(view.day.finishedAt);
+  assert.deepEqual(view.pair.winners[0].names, ['Meera Nair', 'Arjun Reddy']);
+  assert.equal((await call('POST', `/api/days/${day.id}/matches`, { matches: [{ court: 1, kind: 'singles', teamA: [ids[0]], teamB: [ids[1]] }] })).status, 409);
+  assert.equal((await call('POST', `/api/matches/${m.id}/result`, { score: { a: 6, b: 0 } })).status, 409);
+  assert.equal((await call('POST', `/api/days/${day.id}/reopen`)).status, 200);
+  assert.equal((await call('GET', `/api/days/${day.id}`)).data.day.finishedAt, null);
+  assert.equal((await call('POST', `/api/matches/${m.id}/result`, { score: { a: 6, b: 0 } })).status, 200);
+
+  const [running] = (await call('POST', `/api/days/${sameDate.id}/matches`, { matches: [{ court: 1, kind: 'singles', teamA: [ids[0]], teamB: [ids[1]] }] })).data;
+  await call('POST', `/api/matches/${running.id}/start`);
+  assert.equal((await call('POST', `/api/days/${sameDate.id}/finish`)).status, 409);
+  assert.equal((await call('POST', `/api/days/${sameDate.id}/finish`, null, { auth: false })).status, 401);
+  assert.equal((await call('POST', `/api/days/${sameDate.id}/finish`, { stopLive: true })).status, 200);
+  const ended = (await call('GET', `/api/days/${sameDate.id}`)).data;
+  assert.ok(ended.day.finishedAt);
+  assert.equal(ended.matches.find((x) => x.id === running.id).status, 'incomplete');
+  assert.ok(ended.activity.some((a) => a.action === 'session_finished'));
+
+  const report = await fetch(`${base}/api/days/${day.id}/report.pdf`, { headers: { Cookie: cookie } });
+  const bytes = Buffer.from(await report.arrayBuffer());
+  assert.equal(report.status, 200);
+  assert.equal(report.headers.get('content-type'), 'application/pdf');
+  assert.match(report.headers.get('content-disposition'), /slice-by-sta-2026-10-18/);
+  assert.equal(bytes.subarray(0, 5).toString(), '%PDF-');
+  assert.ok(bytes.length > 10000);
+  assert.equal((await fetch(`${base}/api/days/${day.id}/report.pdf`)).status, 401);
+  const playerReport = await fetch(`${base}/api/public/${day.shareToken}/report.pdf`);
+  assert.equal(playerReport.status, 200);
+  assert.equal(playerReport.headers.get('content-type'), 'application/pdf');
+
+  await call('PATCH', `/api/days/${sameDate.id}`, { title: 'Saturday Tennis' });
+  assert.equal((await call('GET', `/api/days/${sameDate.id}`)).data.day.title, 'Saturday Tennis');
+  assert.equal((await call('DELETE', `/api/days/${past.id}`)).status, 200);
+  assert.equal((await call('GET', `/api/days/${past.id}`)).status, 404);
 });

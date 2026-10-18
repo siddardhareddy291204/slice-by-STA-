@@ -1,6 +1,6 @@
-# Slice, by Sridhar’s Tennis Academy
+# Slice by STA
 
-The courtside home for a day of tennis. Whoever is running the courts marks who showed up, gets fair singles/doubles suggestions, scores matches point by point (or enters a final score), and Slice keeps every player’s record, the session leaderboard and **Player of the Day** up to date. Players follow along on a read-only link.
+The courtside home for a day of tennis. Whoever is running the courts marks who showed up, gets fair singles/doubles suggestions, scores matches point by point (or enters a final score), and Slice by STA keeps every player’s record, the session leaderboard and **Player of the Day** up to date. Players follow along on a read-only link.
 
 ## Run it
 
@@ -27,10 +27,12 @@ npm test         # scoring, standings, scheduler and API tests
 
 | Anyone with the club password | Everyone else (view link `/v/<token>`) |
 | --- | --- |
-| Create a day: date, format, courts, who’s present | Player of the Day and its rule |
+| Create a Tennis day: date, format, courts, who’s present | Player of the Day, champions, consolation and Player of the Month |
+| Browse the home calendar into Match history: jump between months and inspect every session and saved match on a date | |
 | Suggest a round (Best fit / Doubles / Singles), edit any slot, confirm | On court now with live point score |
-| Score live: big point pads, deuce/advantage, tiebreak, match point, Undo | Up next, results, incomplete matches |
+| Score live: big point pads, deuce/advantage, tiebreak, match point, Undo; Stop match or prominently Stop Tennis | Up next, results, incomplete matches |
 | Enter or correct a final score (validated), correct players | Leaderboard; auto-refreshes every 10 s |
+| Edit a Tennis day from the hero or Setup; Stop Tennis safely; permanently delete from Setup with explicit confirmation | Games won and monthly recognition |
 | Mark incomplete / resume; Activity log of every result change | |
 | Manage players: add, rename, archive/restore | Who is scoring today |
 | Note who’s scoring today (a plain name) | |
@@ -40,29 +42,36 @@ npm test         # scoring, standings, scheduler and API tests
 
 - **Intro:** four swipeable photo slides on first sign-in (run the day → fair matchups → every point → crown the day). They follow your finger, resist at the ends, and turn on a quick flick. Skip any time; replay from Settings.
 - **Getting started checklist** on Home: add players → start a session → score a match → share the player link. It ticks itself off from real data and disappears when done (or hide it).
+- **Match history:** every date in the Home hero opens a monthly calendar. Marked dates show saved sessions, complete match scores, live and stopped matches, and a link to the full session. Month navigation and a month picker reach older dates; multiple sessions on the same date appear together.
 - **One-time tips** where they matter: Suggest, the live scorer, sharing the player link, and the player view. Each dismisses for good; Settings brings them back.
-- **Install hint:** on phones that can add Slice to the home screen, a one-time card shows how.
+- **Install hint:** on phones that can add Slice by STA to the home screen, a one-time card shows how.
 
 ## How the group uses it
 
-Slice is community-run, not an admin tool. The group shares one **club password**, so anyone who knows it can set up a session or score. Everyone else just opens the **view link**. There are no roles or permissions to manage. A session can note who is **scoring today** (just a name, editable in Setup), and that name appears on the live scorer and the player view and is stamped on every result change in the Log.
+Slice by STA is community-run, not an admin tool. The group shares one **club password**, so anyone who knows it can set up a session or score. Everyone else just opens the **view link**. There are no roles or permissions to manage. A session can note who is **scoring today** (just a name, editable in Setup), and that name appears on the live scorer and the player view and is stamped on every result change in the Log.
 
-**Install on phones:** Slice is a PWA. Share `/install` (e.g. `https://slice-tennis-bice.vercel.app/install`) in the group chat: Android gets a one-tap Install button, iPhone gets the Safari Share → Add to Home Screen steps, and other iPhone browsers are told to open it in Safari. It opens full screen with its own icon, keeps working on patchy courtside signal, and a phone that has opened a view link reopens straight to it.
+**Install on phones:** Slice by STA is a PWA. Share `/install` (e.g. `https://slice-tennis-bice.vercel.app/install`) in the group chat: Android gets a one-tap Install button, iPhone gets the Safari Share → Add to Home Screen steps, and other iPhone browsers are told to open it in Safari. It opens full screen with its own icon, keeps working on patchy courtside signal, and a phone that has opened a view link reopens straight to it.
+
+**Daily PDF:** Open any session or date in Match history and tap Download daily report. The same download is available on the read-only player link. The report is generated from that session's current saved results, with attendance, schedule, scorer, awards, complete standings, and every match. Reports for unfinished sessions are marked In progress; live, waiting, and stopped matches are listed but excluded from standings.
 
 ## Rules implemented
 
-**Standard set**, games to 4 points with deuce and advantage; set to 6 games by 2 (6–5 continues, 7–5 wins); at 6–6 a 7-point tiebreak won by 2, recorded as 7–6 with tiebreak points.
+**Standard set**, games to 4 points with deuce and advantage; at 5–5 a 7-point tiebreak won by 2 decides the set, recorded as 6–5 with tiebreak points. Older 7–5 and 7–6 manual scores remain accepted for historical corrections.
 **Match tiebreak**, first to 10 points, win by 2.
-**Manual scores**, a set must be 6–0…6–4, 7–5 or 7–6 (tiebreak points optional but validated if given); a match tiebreak must be 10–0…10–8 or win-by-exactly-2 beyond 9–9.
-**Standings**, only *completed* matches count. Doubles results count for both partners. Differential = games (set) or points (match tiebreak), the same unit all day because a session has one format.
+**Manual scores**, a set must be 6–0…6–4, 6–5 with tiebreak points, 7–5 or 7–6 (tiebreak points optional but validated if given); a match tiebreak must be 10–0…10–8 or win-by-exactly-2 beyond 9–9.
+**Standings**, only *completed* matches count. Doubles results count for both partners. Standard-set standings show games won and games differential; match-tiebreak standings use points for differential.
 **Player of the Day**, eligible after 2 completed matches; ranked by win %, then total wins, then average score differential per match; still tied on all three → shared title; nobody eligible → “Pending”. The rule is shown on the standings and player views, along with which criterion decided it.
+**Champions and consolation**, eligible after 2 completed matches. Champions are the player(s) with the most match wins. Consolation is the highest games-won player group that does not include a champion; ties share. For match-tiebreak-only Tennis days, consolation remains pending because no games are recorded.
+**Player of the Month**, available from Match history for the selected month. A player must be present on at least 10 distinct Tennis days. The app shows both transparent views: most games won and most matches won, with ties and the ten-day rule shown.
 
 ## Implementation decisions
 
-- **Stack:** plain Node HTTP server + built-in SQLite + vanilla ES modules in the browser. No build step and zero dependencies, so it starts instantly, is easy to host on a small box or a laptop at the club, and has nothing to keep patched.
+- **Stack:** plain Node HTTP server + built-in SQLite locally (Turso on Vercel) + vanilla ES modules in the browser. PDFKit generates the daily report with a bundled Noto Sans font.
 - **One source of truth for rules:** `src/shared/` (scoring, standings, scheduler, names) is imported by both the server and the browser. The server validates and stores; the browser uses the same code for instant feedback and to validate manual scores as you type.
 - **Point log, not counters:** a live match stores its points as a string like `AABAB…`. The current score is always a replay of that log, so Undo is just “drop the last point” and can never drift. When a match ends, its final score is saved with it.
 - **Standings are never stored.** They’re recomputed from saved match results on every request (`computeStandings`), so corrections apply instantly and the same results always give the same table (covered by tests). Ratios are compared by cross-multiplication to avoid floating-point tie errors.
+- **History reads the same database.** The `days`, `day_players`, `matches`, and `activity` tables persist all sessions; a date index and month-filtered query keep calendar browsing scoped to the requested month. Local installs use SQLite; Vercel uses the configured Turso database.
+- **PDFs use live data.** Authenticated organizers and holders of a session's player link can download the same branded report. The server builds it on request from saved results, so corrections appear in the next download. No separate report copies are stored.
 - **Suggestions:** players already scheduled or live are busy; the rest are ordered by fewest matches today (any started match counts, including incomplete ones, since they used court time), then longest rest. Groups and partner splits are chosen by a seeded random search that minimises a cost (repeat partner = 10, repeat opponent pair = 3). “Best fit” fills courts with doubles first and uses singles for leftovers. Free courts are assigned first. Every suggestion is editable before saving.
 - **Two devices scoring one match:** each point carries the log length it was based on; a stale tap gets a 409 and the screen refreshes, so double-entry can’t corrupt a score. Taps are applied optimistically and sent in order.
 - **Format lock:** a day’s format can change only until the first point or result, so results stay comparable.
@@ -107,4 +116,4 @@ test/                   node:test suites
 4. **Multi-day stats**, head-to-head and season tables across sessions of the same format.
 6. **Player availability timing**, late arrivals/early leavers, so suggestions respect who’s about to go.
 7. **More formats**, best-of-three with a match tiebreak, short sets to 4, no-ad scoring.
-8. **Export**, CSV/PDF of a day’s results for the academy noticeboard.
+8. **CSV export** for people who want to analyse results outside the app.

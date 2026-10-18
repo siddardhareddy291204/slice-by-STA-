@@ -22,15 +22,15 @@ test('deuce and advantage: a game needs a two-point lead', () => {
   assert.deepEqual(s.games, [0, 1]);
 });
 
-test('set is first to six by two: 6–5 continues, 7–5 wins', () => {
-  const to55 = (game('A') + game('B')).repeat(5);
-  let s = replay('set', to55 + game('A'));
-  assert.deepEqual(s.games, [6, 5]);
+test('set reaches 5–4, then a 6–4 set wins', () => {
+  const to44 = (game('A') + game('B')).repeat(4);
+  let s = replay('set', to44 + game('A'));
+  assert.deepEqual(s.games, [5, 4]);
   assert.equal(s.winner, null);
   assert.equal(s.tiebreak, false);
-  s = replay('set', to55 + game('A') + game('A'));
+  s = replay('set', to44 + game('A') + game('A'));
   assert.equal(s.winner, 'A');
-  assert.deepEqual(scoreFromState(s), { a: 7, b: 5, tb: null });
+  assert.deepEqual(scoreFromState(s), { a: 6, b: 4, tb: null });
 });
 
 test('6–4 ends the set', () => {
@@ -39,17 +39,18 @@ test('6–4 ends the set', () => {
   assert.deepEqual(s.games, [6, 4]);
 });
 
-test('7-point tiebreak at 6–6, won by two (extends past 6–6)', () => {
-  const to66 = (game('A') + game('B')).repeat(6);
-  let s = replay('set', to66);
+test('7-point tiebreak starts at 5–5, won by two', () => {
+  const to55 = (game('A') + game('B')).repeat(5);
+  let s = replay('set', to55);
   assert.equal(s.tiebreak, true);
   assert.equal(pointDisplay(s).label, 'Tiebreak');
-  s = replay('set', to66 + 'AB'.repeat(6) + 'A'); // 7–6 in the tiebreak: not over
+  assert.deepEqual(s.games, [5, 5]);
+  s = replay('set', to55 + 'AB'.repeat(3) + 'A'); // 4–3 in the tiebreak: not over
   assert.equal(s.winner, null);
-  s = replay('set', to66 + 'AB'.repeat(6) + 'BB'); // 6–8
+  s = replay('set', to55 + 'AB'.repeat(6) + 'BB'); // 6–8
   assert.equal(s.winner, 'B');
-  assert.deepEqual(scoreFromState(s), { a: 6, b: 7, tb: [6, 8] });
-  assert.equal(formatScore(scoreFromState(s), 'B'), '7–6 (8–6)');
+  assert.deepEqual(scoreFromState(s), { a: 5, b: 6, tb: [6, 8] });
+  assert.equal(formatScore(scoreFromState(s), 'B'), '6–5 (8–6)');
 });
 
 test('match tiebreak: first to 10, win by 2', () => {
@@ -75,7 +76,10 @@ test('manual results are validated against the format', () => {
   assert.ok(ok('set', { a: 5, b: 7 }));
   assert.ok(ok('set', { a: 7, b: 6, tb: [7, 4] }));
   assert.ok(ok('set', { a: 6, b: 7, tb: [10, 12] }));
-  assert.ok(ok('set', { a: 7, b: 6 })); // tiebreak points optional
+  assert.ok(ok('set', { a: 6, b: 5, tb: [7, 4] }));
+  assert.ok(ok('set', { a: 7, b: 6, tb: [7, 4] }));
+  assert.ok(ok('set', { a: 7, b: 6 })); // historical tiebreak points remain optional
+  assert.equal(ok('set', { a: 6, b: 5 }), false);
   assert.equal(ok('set', { a: 6, b: 5 }), false);
   assert.equal(ok('set', { a: 7, b: 4 }), false);
   assert.equal(ok('set', { a: 8, b: 6 }), false);

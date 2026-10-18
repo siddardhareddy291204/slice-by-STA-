@@ -31,8 +31,12 @@ CREATE TABLE IF NOT EXISTS days (
   courts      INTEGER NOT NULL,
   share_token TEXT NOT NULL UNIQUE,
   scorer      TEXT,
+  start_time  TEXT,
+  end_time    TEXT,
+  finished_at TEXT,
   created_at  TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS days_date ON days(date DESC, id DESC);
 CREATE TABLE IF NOT EXISTS day_players (
   day_id    INTEGER NOT NULL REFERENCES days(id) ON DELETE CASCADE,
   player_id INTEGER NOT NULL REFERENCES players(id),
@@ -77,12 +81,18 @@ CREATE INDEX IF NOT EXISTS activity_day ON activity(day_id, id);
 const MIGRATIONS = [
   ['days', 'scorer', 'ALTER TABLE days ADD COLUMN scorer TEXT'],
   ['activity', 'by_name', 'ALTER TABLE activity ADD COLUMN by_name TEXT'],
+  ['days', 'start_time', 'ALTER TABLE days ADD COLUMN start_time TEXT'],
+  ['days', 'end_time', 'ALTER TABLE days ADD COLUMN end_time TEXT'],
+  ['days', 'finished_at', 'ALTER TABLE days ADD COLUMN finished_at TEXT'],
 ];
 
 async function migrate(db) {
   for (const [table, column, sql] of MIGRATIONS) {
     const cols = await db.all(`PRAGMA table_info(${table})`);
-    if (!cols.some((c) => c.name === column)) await db.exec(sql);
+    if (!cols.some((c) => c.name === column)) {
+      try { await db.exec(sql); }
+      catch (err) { if (!/duplicate column name/i.test(String(err.message))) throw err; }
+    }
   }
 }
 

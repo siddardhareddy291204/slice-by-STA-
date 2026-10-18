@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { openDb } from './db.js';
 import { FORMATS, replay, scoreFromState, validateResult, formatScore } from './shared/scoring.js';
-import { computeStandings, playerOfTheDay } from './shared/standings.js';
+import { computeStandings, playerOfTheDay, pairOfTheDay, sessionAwards, computeMonthlyStandings, monthlyAwards } from './shared/standings.js';
 import { suggestRound } from './shared/scheduler.js';
 import { cleanName, nameKey } from './shared/names.js';
 
@@ -45,6 +45,9 @@ function toDay(r) {
     courts: Number(r.courts),
     shareToken: r.share_token,
     scorer: r.scorer ?? null,
+    startTime: r.start_time ?? null,
+    endTime: r.end_time ?? null,
+    finishedAt: r.finished_at ?? null,
     createdAt: r.created_at,
   };
 }
@@ -203,14 +206,19 @@ export class Store {
     return (await this.all('SELECT * FROM matches WHERE day_id = ? ORDER BY seq', dayId)).map(toMatch);
   }
 
-  checkDayFields({ format, courts, date, title, scorer }) {
+  checkDayFields({ format, courts, date, title, scorer, startTime, endTime }) {
     if (format !== undefined && !FORMATS[format]) throw new HttpError(400, 'Choose a scoring format.');
     if (courts !== undefined && (!Number.isInteger(courts) || courts < 1 || courts > MAX_COURTS)) {
       throw new HttpError(400, `Courts must be between 1 and ${MAX_COURTS}.`);
     }
-    if (date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new HttpError(400, 'Pick a valid date.');
+    if (date !== undefined && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(`${date}T12:00:00Z`)) || new Date(`${date}T12:00:00Z`).toISOString().slice(0, 10) !== date)) throw new HttpError(400, 'Pick a valid date.');
     if (title !== undefined && cleanName(title).length > 60) throw new HttpError(400, 'Keep the title under 60 characters.');
     if (scorer !== undefined && scorer !== null && cleanName(scorer).length > 40) throw new HttpError(400, 'Keep the scorer’s name under 40 characters.');
+    for (const time of [startTime, endTime]) if (time !== undefined && time !== null && time !== '' && !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new HttpError(400, 'Use a valid session time.');
+  }
+
+  assertOpen(day) {
+    if (day.finishedAt) throw new HttpError(409, 'This session is finished. Reopen it in Setup to change matches.');
   }
 
   async setPresent(dayId, playerIds) {
@@ -223,25 +231,33 @@ export class Store {
     for (const id of ids) await this.run('INSERT INTO day_players (day_id, player_id) VALUES (?, ?)', dayId, id);
   }
 
-  createDay({ date, title, format, courts, playerIds = [], scorer }) {
-    this.checkDayFields({ date, title, format, courts, scorer });
+  createDay({ date, title, format, courts, playerIds = [], scorer, startTime, endTime }) {
+    this.checkDayFields({ date, title, format, courts, scorer, startTime, endTime });
     if (!date) throw new HttpError(400, 'Pick a date.');
+    if (startTime && endTime && startTime >= endTime) throw new HttpError(400, 'End time must be after start time.');
     return this.tx(async (s) => {
       const token = crypto.randomBytes(9).toString('base64url');
       const r = await s.run(
-        'INSERT INTO days (date, title, format, courts, share_token, scorer, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        date, cleanName(title) || defaultTitle(date), format, courts, token, cleanName(scorer) || null, now(),
+        'INSERT INTO days (date, title, format, courts, share_token, scorer, start_time, end_time, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        date, cleanName(title) || defaultTitle(date), format, courts, token, cleanName(scorer) || null, startTime || null, endTime || null, now(),
       );
       await s.setPresent(r.lastInsertRowid, playerIds);
       return s.dayRow(r.lastInsertRowid);
     });
   }
 
-  async updateDay(id, { title, courts, format, playerIds, scorer }) {
+  async updateDay(id, { date, title, courts, format, playerIds, scorer, startTime, endTime }) {
     const day = await this.dayRow(id);
-    this.checkDayFields({ title, courts, format, scorer });
+    this.checkDayFields({ date, title, courts, format, scorer, startTime, endTime });
+    const nextStart = startTime === undefined ? day.startTime : startTime;
+    const nextEnd = endTime === undefined ? day.endTime : endTime;
+    if (nextStart && nextEnd && nextStart >= nextEnd) throw new HttpError(400, 'End time must be after start time.');
+    if (day.finishedAt && (courts !== undefined || format !== undefined || playerIds !== undefined)) this.assertOpen(day);
     return this.tx(async (s) => {
-      if (title !== undefined) await s.run('UPDATE days SET title = ? WHERE id = ?', cleanName(title) || defaultTitle(day.date), id);
+      if (date !== undefined) await s.run('UPDATE days SET date = ? WHERE id = ?', date, id);
+      if (title !== undefined) await s.run('UPDATE days SET title = ? WHERE id = ?', cleanName(title) || defaultTitle(date ?? day.date), id);
+      if (startTime !== undefined) await s.run('UPDATE days SET start_time = ? WHERE id = ?', startTime || null, id);
+      if (endTime !== undefined) await s.run('UPDATE days SET end_time = ? WHERE id = ?', endTime || null, id);
       if (courts !== undefined) {
         const tooHigh = await s.get(`SELECT 1 AS x FROM matches WHERE day_id = ? AND court > ? AND status IN ('scheduled', 'live')`, id, courts);
         if (tooHigh) throw new HttpError(409, `A match is waiting or live on a court above ${courts}. Move it first.`);
@@ -258,6 +274,30 @@ export class Store {
     });
   }
 
+  finishDay(id, { stopLive = false } = {}) {
+    return this.tx(async (s) => {
+      const day = await s.dayRow(id);
+      if (day.finishedAt) return day;
+      const live = (await s.matchesFor(id)).filter((m) => m.status === 'live');
+      if (live.length && stopLive !== true) throw new HttpError(409, 'There are live matches. End them as incomplete to finish this session.');
+      for (const match of live) await s.markIncomplete(match.id, 'Session ended before this match finished');
+      const at = now();
+      await s.run('UPDATE days SET finished_at = ? WHERE id = ?', at, id);
+      await s.run('INSERT INTO activity (day_id, action, summary, by_name, at) VALUES (?, ?, ?, ?, ?)', id, 'session_finished', 'Session ended', day.scorer, at);
+      return s.dayRow(id);
+    });
+  }
+
+  reopenDay(id) {
+    return this.tx(async (s) => {
+      const day = await s.dayRow(id);
+      if (!day.finishedAt) return day;
+      await s.run('UPDATE days SET finished_at = NULL WHERE id = ?', id);
+      await s.run('INSERT INTO activity (day_id, action, summary, by_name, at) VALUES (?, ?, ?, ?, ?)', id, 'session_reopened', 'Session reopened', day.scorer, now());
+      return s.dayRow(id);
+    });
+  }
+
   async deleteDay(id) {
     await this.dayRow(id);
     return this.tx(async (s) => {
@@ -268,12 +308,19 @@ export class Store {
   }
 
   // Home screen data in one database round trip, grouped in memory.
-  async listDays() {
+  async listDays({ month } = {}) {
+    if (month !== undefined && !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new HttpError(400, 'Choose a valid month.');
+    const start = month ? `${month}-01` : null;
+    const next = month ? new Date(`${start}T12:00:00Z`) : null;
+    if (next) next.setUTCMonth(next.getUTCMonth() + 1);
+    const end = next ? next.toISOString().slice(0, 10) : null;
+    const dayFilter = month ? 'WHERE date >= ? AND date < ?' : '';
+    const childFilter = month ? 'WHERE day_id IN (SELECT id FROM days WHERE date >= ? AND date < ?)' : '';
     const [dayRows, playerRows, presentRows, matchRows] = await this.db.readMany([
-      ['SELECT * FROM days ORDER BY date DESC, id DESC'],
+      [`SELECT * FROM days ${dayFilter} ORDER BY date DESC, id DESC`, ...(month ? [start, end] : [])],
       ['SELECT id, name FROM players'],
-      ['SELECT day_id, player_id FROM day_players'],
-      ['SELECT * FROM matches ORDER BY seq'],
+      [`SELECT day_id, player_id FROM day_players ${childFilter}`, ...(month ? [start, end] : [])],
+      [`SELECT * FROM matches ${childFilter} ORDER BY seq`, ...(month ? [start, end] : [])],
     ]);
     const names = Object.fromEntries(playerRows.map((r) => [Number(r.id), r.name]));
     const presentBy = groupBy(presentRows, 'day_id', (r) => Number(r.player_id));
@@ -281,7 +328,7 @@ export class Store {
     return dayRows.map(toDay).map((day) => {
       const matches = matchesBy.get(day.id) ?? [];
       const present = presentBy.get(day.id) ?? [];
-      const standings = computeStandings(present.map((id) => ({ id, name: names[id] })), matches);
+      const standings = computeStandings(present.map((id) => ({ id, name: names[id] })), matches, { format: day.format });
       for (const r of standings) r.name = names[r.playerId] ?? r.name;
       const potd = playerOfTheDay(standings);
       return {
@@ -291,6 +338,7 @@ export class Store {
         completedCount: matches.filter((m) => m.status === 'completed').length,
         liveCount: matches.filter((m) => m.status === 'live').length,
         potd: potd.status === 'awarded' ? potd.winners.map((w) => w.name) : [],
+        pair: pairOfTheDay(Object.entries(names).map(([id, name]) => ({ id: Number(id), name })), matches).winners.map((w) => w.names.join(' & ')),
       };
     });
   }
@@ -319,7 +367,7 @@ export class Store {
     const people = {};
     for (const id of presentIds) people[id] = names[id];
     for (const m of matches) for (const id of [...m.teamA, ...m.teamB]) people[id] = names[id] ?? 'Unknown player';
-    const standings = computeStandings(presentIds.map((id) => ({ id, name: names[id] })), matches);
+    const standings = computeStandings(presentIds.map((id) => ({ id, name: names[id] })), matches, { format: day.format });
     for (const r of standings) r.name = people[r.playerId] ?? r.name;
     const view = {
       day: { ...day, formatInfo: FORMATS[day.format] },
@@ -328,6 +376,8 @@ export class Store {
       matches,
       standings,
       potd: playerOfTheDay(standings),
+      pair: pairOfTheDay(playerRows.map((r) => ({ id: Number(r.id), name: r.name })), matches),
+      awards: sessionAwards(standings),
     };
     if (organizer) {
       // Everyone who could be put in a match: all active players, plus anyone already here.
@@ -351,6 +401,31 @@ export class Store {
       delete view.day.shareToken;
     }
     return view;
+  }
+
+  async monthlyView(month) {
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new HttpError(400, 'Choose a valid month.');
+    const start = `${month}-01`;
+    const next = new Date(`${start}T12:00:00Z`);
+    next.setUTCMonth(next.getUTCMonth() + 1);
+    const end = next.toISOString().slice(0, 10);
+    const [dayRows, playerRows, presentRows, matchRows] = await this.db.readMany([
+      ['SELECT id, date, format FROM days WHERE date >= ? AND date < ? ORDER BY date, id', start, end],
+      ['SELECT id, name FROM players'],
+      ['SELECT day_id, player_id FROM day_players WHERE day_id IN (SELECT id FROM days WHERE date >= ? AND date < ?)', start, end],
+      ['SELECT * FROM matches WHERE day_id IN (SELECT id FROM days WHERE date >= ? AND date < ?) ORDER BY seq', start, end],
+    ]);
+    const presentBy = groupBy(presentRows, 'day_id', (r) => Number(r.player_id));
+    const matchesBy = groupBy(matchRows, 'day_id', toMatch);
+    const sessions = dayRows.map((day) => ({
+      date: day.date,
+      format: day.format,
+      presentIds: presentBy.get(Number(day.id)) ?? [],
+      matches: matchesBy.get(Number(day.id)) ?? [],
+    }));
+    const players = playerRows.map((r) => ({ id: Number(r.id), name: r.name }));
+    const standings = computeMonthlyStandings(players, sessions);
+    return { month, sessionCount: dayRows.length, standings, awards: monthlyAwards(standings) };
   }
 
   // ---------- Matches ----------
@@ -384,6 +459,7 @@ export class Store {
 
   async createMatches(dayId, list) {
     const day = await this.dayRow(dayId);
+    this.assertOpen(day);
     if (!Array.isArray(list) || !list.length) throw new HttpError(400, 'Add at least one match.');
     const lineups = [];
     for (const m of list) lineups.push(await this.checkLineup(day, m));
@@ -395,6 +471,7 @@ export class Store {
       }
     }
     return this.tx(async (s) => {
+      s.assertOpen(await s.dayRow(dayId));
       await s.markPresent(dayId, lineups.flatMap((l) => l.newcomers));
       let seq = Number((await s.get('SELECT MAX(seq) AS s FROM matches WHERE day_id = ?', dayId)).s ?? 0) + 1;
       const ts = now();
@@ -453,6 +530,7 @@ export class Store {
     return this.tx(async (s) => {
       const m = await s.matchRow(id);
       const day = await s.dayRow(m.dayId);
+      s.assertOpen(day);
       const l = await s.checkLineup(day, { court: m.court, kind: m.kind, teamA: m.teamA, teamB: m.teamB, ...input });
       if (l.kind !== m.kind && m.points) throw new HttpError(409, 'Undo the recorded points before switching singles and doubles.');
       await s.markPresent(m.dayId, l.newcomers);
@@ -469,17 +547,21 @@ export class Store {
     });
   }
 
-  async startMatch(id) {
-    const m = await this.matchRow(id);
-    if (m.status === 'live') return m;
-    if (m.status !== 'scheduled') throw new HttpError(409, 'Only a waiting match can be started.');
-    return this.save(id, { status: 'live', startedAt: now() });
+  startMatch(id) {
+    return this.tx(async (s) => {
+      const m = await s.matchRow(id);
+      s.assertOpen(await s.dayRow(m.dayId));
+      if (m.status === 'live') return m;
+      if (m.status !== 'scheduled') throw new HttpError(409, 'Only a waiting match can be started.');
+      return s.save(id, { status: 'live', startedAt: now() });
+    });
   }
 
   addPoint(id, side, at) {
     if (side !== 'A' && side !== 'B') throw new HttpError(400, 'Point must go to side A or B.');
     return this.tx(async (s) => {
       let m = await s.matchRow(id);
+      s.assertOpen(await s.dayRow(m.dayId));
       if (m.status === 'scheduled') m = await s.save(id, { status: 'live', startedAt: now() });
       if (m.status !== 'live') throw new HttpError(409, 'This match isn’t live, so points can’t be added.');
       if (m.source === 'manual') throw new HttpError(409, 'This score was entered by hand.');
@@ -498,6 +580,7 @@ export class Store {
   undoPoint(id, at) {
     return this.tx(async (s) => {
       const m = await s.matchRow(id);
+      s.assertOpen(await s.dayRow(m.dayId));
       if (m.source === 'manual') throw new HttpError(409, 'This score was typed in. Use Correct score instead.');
       if (!m.points) throw new HttpError(409, 'There are no points to undo.');
       if (Number.isInteger(at) && at !== m.points.length) throw new HttpError(409, 'The score changed on another device. Refreshed to the latest.');
@@ -514,7 +597,9 @@ export class Store {
   setResult(id, input, note) {
     return this.tx(async (s) => {
       const m = await s.matchRow(id);
-      const { format } = await s.dayRow(m.dayId);
+      const day = await s.dayRow(m.dayId);
+      s.assertOpen(day);
+      const { format } = day;
       const check = validateResult(format, input);
       if (!check.ok) throw new HttpError(400, check.error);
       const fields = { status: 'completed', score: check.score, winner: check.winner, source: 'manual', completedAt: m.completedAt ?? now() };
@@ -538,6 +623,7 @@ export class Store {
   markIncomplete(id, note) {
     return this.tx(async (s) => {
       const m = await s.matchRow(id);
+      s.assertOpen(await s.dayRow(m.dayId));
       if (m.status === 'incomplete') return m;
       const { format } = await s.dayRow(m.dayId);
       const partial = m.points && m.source !== 'manual' ? scoreFromState(replay(format, m.points)) : m.score;
@@ -552,6 +638,7 @@ export class Store {
   reopen(id) {
     return this.tx(async (s) => {
       const m = await s.matchRow(id);
+      s.assertOpen(await s.dayRow(m.dayId));
       if (m.status !== 'incomplete') throw new HttpError(409, 'Only a stopped match can be resumed.');
       const fields = m.source === 'manual' ? { status: 'live', score: null, source: null, points: '' } : { status: 'live', score: null };
       const updated = await s.save(id, fields);
@@ -563,6 +650,7 @@ export class Store {
   deleteMatch(id) {
     return this.tx(async (s) => {
       const m = await s.matchRow(id);
+      s.assertOpen(await s.dayRow(m.dayId));
       if (m.status === 'completed' || m.status === 'incomplete' || m.points) {
         const names = await s.playerNames();
         await s.log(m, names, 'deleted', m.status === 'completed' ? `Deleted result: ${s.resultText(m, names)}` : 'Deleted a match that had started', {
@@ -576,6 +664,7 @@ export class Store {
 
   async suggest(dayId, { mode = 'auto', seed = 1 } = {}) {
     const day = await this.dayRow(dayId);
+    this.assertOpen(day);
     if (!['auto', 'singles', 'doubles'].includes(mode)) throw new HttpError(400, 'Mode must be auto, singles or doubles.');
     const names = await this.playerNames();
     const present = (await this.presentIds(dayId)).map((id) => ({ id, name: names[id] }));
@@ -585,5 +674,5 @@ export class Store {
 
 export function defaultTitle(date) {
   const d = new Date(`${date}T12:00:00`);
-  return `${d.toLocaleDateString('en-GB', { weekday: 'long' })} session`;
+  return `${d.toLocaleDateString('en-GB', { weekday: 'long' })} Tennis`;
 }

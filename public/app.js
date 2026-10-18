@@ -1,5 +1,5 @@
 import { FORMATS, replay, pointDisplay, pointSituation, validateResult, formatScore, scoreFromState } from '/shared/scoring.js';
-import { MIN_MATCHES } from '/shared/standings.js';
+import { MIN_MATCHES, MIN_PARTICIPATION_DAYS } from '/shared/standings.js';
 
 // ---------- Tiny templating: h`` escapes values, nested h`` stays raw ----------
 class Raw { constructor(s) { this.s = s; } }
@@ -7,9 +7,11 @@ const raw = (s) => new Raw(s);
 const esc = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const part = (v) => (v == null || v === false ? '' : v instanceof Raw ? v.s : Array.isArray(v) ? v.map(part).join('') : esc(v));
 const h = (strings, ...vals) => raw(strings.reduce((out, s, i) => out + s + (i < vals.length ? part(vals[i]) : ''), ''));
+const APP_NAME = 'Slice by STA';
 
 const $app = document.getElementById('app');
 const $toast = document.getElementById('toast');
+const $connection = document.getElementById('connection');
 const $modal = document.body.appendChild(document.createElement('div'));
 
 const S = {
@@ -21,6 +23,7 @@ const S = {
   draft: null, // new-day form
   modal: null,
   editingPlayer: null,
+  history: null,
   route: null,
 };
 
@@ -36,6 +39,7 @@ async function api(path, { method = 'GET', body } = {}) {
   if (res.ok && method !== 'GET') {
     CACHE.delete('home');
     CACHE.delete('players');
+    for (const key of CACHE.keys()) if (key.startsWith('history:')) CACHE.delete(key);
   }
   if (!res.ok) {
     const err = new Error(data.error || `Request failed (${res.status})`);
@@ -64,14 +68,56 @@ function go(hash) {
   else location.hash = hash;
 }
 
+let loadingTimer;
+let enteringScreen = false;
+const scrollPositions = new Map();
+let screenKey = null;
+let pendingScroll = null;
 function paint(content) {
+  clearTimeout(loadingTimer);
+  const animate = enteringScreen || $app.dataset.loading === 'true';
+  const focused = !animate && $app.contains(document.activeElement) ? document.activeElement : null;
+  const focusAttrs = focused && ['id', 'data-act', 'data-id', 'data-side', 'data-d', 'data-key', 'data-mode', 'data-bind', 'name', 'href'].filter((key) => focused.hasAttribute(key)).map((key) => [key, focused.getAttribute(key)]);
+  const selection = focused && typeof focused.selectionStart === 'number' ? [focused.selectionStart, focused.selectionEnd] : null;
   $app.innerHTML = part(content);
+  if (focusAttrs?.length) {
+    const replacement = [...$app.querySelectorAll(focused.tagName)].find((el) => focusAttrs.every(([key, value]) => el.getAttribute(key) === value));
+    if (replacement) {
+      replacement.focus({ preventScroll: true });
+      if (selection && typeof replacement.setSelectionRange === 'function') replacement.setSelectionRange(...selection);
+    }
+  }
+  delete $app.dataset.loading;
+  if (animate) {
+    $app.classList.remove('view-enter');
+    void $app.offsetWidth;
+    $app.classList.add('view-enter');
+  }
+  if (pendingScroll !== null) {
+    const y = pendingScroll;
+    pendingScroll = null;
+    requestAnimationFrame(() => window.scrollTo(0, y));
+  }
+  enteringScreen = false;
+}
+
+function showLoading(nav) {
+  if (nav !== navId || $app.dataset.loading === 'true') return;
+  $app.dataset.loading = 'true';
+  $app.innerHTML = '<div class="wrap loading-screen" aria-label="Loading screen"><div class="skeleton skeleton-hero"></div><div class="skeleton skeleton-action"></div><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-card"></div><div class="skeleton skeleton-card"></div></div>';
+}
+
+function connection(message = '') {
+  $connection.hidden = !message;
+  $connection.querySelector('span').textContent = message;
 }
 
 const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const today = () => iso(new Date());
 const fmtDate = (date, opts = { weekday: 'short', day: 'numeric', month: 'short' }) => new Date(`${date}T12:00:00`).toLocaleDateString(undefined, opts);
 const fmtTime = (at) => new Date(at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+const clockTime = (value) => value ? new Date(`2000-01-01T${value}:00`).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
+const sessionTime = (day) => [day.startTime, day.endTime].filter(Boolean).map(clockTime).join(' – ');
 const name = (id) => S.view?.people?.[id] ?? S.view?.roster?.find((p) => p.id === id)?.name ?? 'Player';
 const first = (id) => name(id).split(' ')[0];
 const team = (ids) => ids.map(name).join(' & ');
@@ -89,6 +135,7 @@ const svg = (d, extra = '') => raw(`<svg viewBox="0 0 24 24" fill="none" stroke=
 const I = {
   back: svg('<path d="M15 18l-6-6 6-6"/>'),
   share: svg('<path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"/><path d="M16 6l-4-4-4 4"/><path d="M12 2v13"/>'),
+  download: svg('<path d="M12 3v12m-4-4 4 4 4-4M4 17v3h16v-3"/>'),
   users: svg('<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7"/><path d="M18.5 14.8c1.6.8 2.7 2.6 3 5.2"/>'),
   out: svg('<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 17l-5-5 5-5"/><path d="M5 12h11"/>'),
   home: svg('<path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V20h14V9.5"/>'),
@@ -113,7 +160,9 @@ const I = {
 
 // Original mark: a lime ball with a dark seam.
 const ballMark = raw('<svg class="ball" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="#D4F04C"/><path d="M4.2 4.6c3.6 3.2 3.6 11.6 0 14.8M19.8 4.6c-3.6 3.2-3.6 11.6 0 14.8" fill="none" stroke="#18231A" stroke-opacity=".55" stroke-width="1.6"/></svg>');
-const wordmark = (dark = false) => h`<span class="wordmark ${dark ? 'dark' : ''}">${ballMark}Slice</span>`;
+const brandCopy = () => h`<span class="brand-copy"><strong>Slice</strong><small>by STA</small></span>`;
+const wordmark = (dark = false) => h`<span class="wordmark ${dark ? 'dark' : ''}">${ballMark}${brandCopy()}</span>`;
+const brandTitle = () => h`<h1 class="brand-title">${ballMark}${brandCopy()}</h1>`;
 
 function topbar({ back, title, right = '' }) {
   return h`<header class="topbar"><div class="inner">
@@ -155,9 +204,13 @@ async function fresh(key, fetcher, render) {
   try {
     data = await fetcher();
   } catch (err) {
-    if (hit && err.status !== 401) return; // offline or flaky: keep showing the cached screen
+    if (hit && err.status !== 401) {
+      if (nav === navId) connection('Showing saved data. Check your connection.');
+      return;
+    }
     throw err;
   }
+  if (nav === navId) connection();
   const json = JSON.stringify(data);
   CACHE.set(key, { data, json });
   if (nav === navId && (!hit || hit.json !== json)) render(data);
@@ -172,10 +225,19 @@ function prefetch(key, url) {
 let pollTimer = null;
 async function route() {
   navId += 1;
+  const nav = navId;
   clearInterval(pollTimer);
   S.modal = null;
   paintModal();
+  const nextKey = `${location.pathname}${location.hash || '#/'}`;
+  if (screenKey && screenKey !== nextKey) scrollPositions.set(screenKey, window.scrollY);
+  pendingScroll = screenKey === nextKey ? window.scrollY : (scrollPositions.get(nextKey) ?? 0);
+  screenKey = nextKey;
   window.scrollTo(0, 0);
+  connection();
+  enteringScreen = true;
+  clearTimeout(loadingTimer);
+  loadingTimer = setTimeout(() => showLoading(nav), 140);
   if (location.pathname === '/install') return renderInstall();
   const pub = location.pathname.match(/^\/v\/([\w-]+)/);
   if (pub) {
@@ -195,9 +257,11 @@ async function route() {
         }).catch(() => {});
       } else {
         S.me = await api('/api/me');
+        if (nav !== navId) return;
         store('slice.me', JSON.stringify(S.me));
       }
     }
+    if (nav !== navId) return;
     const hash = location.hash.slice(1) || '/';
     const viewToken = readLocal('slice.viewToken');
     if (!S.me.organizer && viewToken && isStandalone()) return location.replace(`/v/${viewToken}`);
@@ -207,13 +271,18 @@ async function route() {
     if (hash === '/' || hash === '/login') return await showHome();
     if (hash === '/players') return await showPlayers();
     if (hash === '/settings') return renderSettings();
+    if (hash === '/history') return await showHistory(today());
+    if ((m = hash.match(/^\/history\/(\d{4}-\d{2})$/))) return await showHistory(`${m[1]}-01`, true);
+    if ((m = hash.match(/^\/history\/(\d{4}-\d{2}-\d{2})$/))) return await showHistory(m[1]);
     if (hash === '/day/new') return await showNewDay();
+    if ((m = hash.match(/^\/day\/(\d+)\/awards\/(player|pair)$/))) return await showAward(+m[1], m[2]);
     if ((m = hash.match(/^\/day\/(\d+)\/match\/(\d+)$/))) return await showMatch(+m[1], +m[2]);
     if ((m = hash.match(/^\/day\/(\d+)(?:\/(courts|standings|activity|setup))?$/))) return await showDay(+m[1], m[2] || 'courts');
     go('#/');
   } catch (err) {
+    if (nav !== navId) return;
     if (err.status === 401) return;
-    paint(h`${topbar({ back: '#/', title: '' })}<div class="wrap">${empty('Couldn’t load that', err.message, h`<a class="btn btn-dark" href="#/">Home</a>`)}</div>`);
+    paint(h`${topbar({ back: '#/', title: '' })}<div class="wrap">${empty('Couldn’t load that', err.message, h`<button class="btn btn-dark" data-act="retryRoute">Try again</button>`)}</div>`);
   }
 }
 window.addEventListener('hashchange', route);
@@ -232,9 +301,18 @@ document.addEventListener('click', (e) => {
   if (!fn) return;
   e.preventDefault();
   Promise.resolve()
-    .then(() => fn(el.dataset, el, e))
+    .then(() => {
+      const result = fn(el.dataset, el, e);
+      if (result && typeof result.then === 'function' && el instanceof HTMLButtonElement) {
+        el.disabled = true;
+        el.setAttribute('aria-busy', 'true');
+        result.finally(() => { el.disabled = false; el.removeAttribute('aria-busy'); }).catch(() => {});
+      }
+      return result;
+    })
     .catch((err) => err.status !== 401 && toast(err.message, true));
 });
+ACT.retryRoute = () => { connection(); route(); };
 
 document.addEventListener('submit', (e) => {
   const f = e.target.closest('form[data-form]');
@@ -266,6 +344,17 @@ document.addEventListener('input', (e) => {
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && S.modal) ACT.closeModal();
+  if (e.key === 'Tab' && S.modal) {
+    const focusable = [...$modal.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href]')];
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (e.shiftKey && (document.activeElement === first || !$modal.contains(document.activeElement))) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && (document.activeElement === last || !$modal.contains(document.activeElement))) {
+      e.preventDefault(); first.focus();
+    }
+  }
 });
 
 // ---------- Sign-in ----------
@@ -273,7 +362,7 @@ function renderLogin() {
   const setup = S.me.setupNeeded;
   if (location.hash !== '#/login') history.replaceState(null, '', '#/login');
   paint(h`<div class="signin photo">
-    <div class="head"><h1>Slice</h1><p class="sub">Sridhar’s Tennis Academy</p></div>
+    <div class="head">${brandTitle()}<p class="sub">Sridhar’s Tennis Academy</p></div>
     <form class="glass stack" data-form="${setup ? 'setup' : 'login'}">
       <label class="field on-glass" for="pw"><span>${setup ? 'Create a club password' : 'Club password'}</span></label>
       <div class="pw-row">
@@ -282,7 +371,7 @@ function renderLogin() {
         <button class="go" type="submit" aria-label="${setup ? 'Save password' : 'Sign in'}">${I.arrow}</button>
       </div>
       <div class="error" data-error hidden></div>
-      <a class="foot small install-link" href="/install">Get Slice on your phone</a>
+      <a class="foot small install-link" href="/install">Get ${APP_NAME} on your phone</a>
       <p class="foot small">${readLocal('slice.viewToken') ? h`Just following along? <a href="/v/${readLocal('slice.viewToken')}">Open the live view</a>` : 'Just following along? Open the view link from your group chat.'}</p>
     </form>
   </div>`);
@@ -319,7 +408,8 @@ async function showHome() {
 }
 
 function renderHome(days, players) {
-  const byDate = new Map(days.map((d) => [d.date, d]));
+  const byDate = new Map();
+  for (const day of days) if (!byDate.has(day.date)) byDate.set(day.date, day);
   const todays = byDate.get(today());
   const start = new Date();
   start.setDate(start.getDate() - 3);
@@ -343,8 +433,9 @@ function renderHome(days, players) {
         const s = byDate.get(key);
         const cls = `d ${key === today() ? 'on' : ''} ${s ? 'has' : ''}`;
         const inner = h`<span>${d.toLocaleDateString(undefined, { weekday: 'short' })}</span><span class="n">${d.getDate()}</span><span class="dot"></span>`;
-        return s ? h`<a class="${cls}" href="#/day/${s.id}" aria-label="${s.title}">${inner}</a>` : h`<span class="${cls}">${inner}</span>`;
+        return h`<a class="${cls}" href="#/history/${key}" aria-label="View ${fmtDate(key, { weekday: 'long', day: 'numeric', month: 'long' })}${s ? ` · ${s.title}` : ''}">${inner}</a>`;
       })}</div>
+      <a class="hero-history-link" href="#/history/${today()}">${I.cal} Browse match history ${I.arrow}</a>
     </header>
 
     <div style="margin-top:16px">
@@ -355,8 +446,8 @@ function renderHome(days, players) {
 
     <div class="install-slot">${installTip()}</div>
     ${checklist(days, players)}
-    <div class="section-head"><h2>Sessions</h2><span class="count">${days.length}</span></div>
-    ${days.length ? h`<div class="stack">${days.map(sessionCard)}</div>` : empty('No sessions yet', 'Start one when players arrive.')}
+    <div class="section-head"><h2>Recent sessions</h2><a class="section-link" href="#/history/${today()}">View all dates</a></div>
+    ${days.length ? h`<div class="stack">${days.slice(0, 4).map(sessionCard)}</div>` : empty('No sessions yet', 'Start one when players arrive.')}
   </div>
   ${homeTabs('home')}`);
 }
@@ -364,8 +455,9 @@ function renderHome(days, players) {
 function sessionCard(d) {
   return h`<a class="card session" href="#/day/${d.id}">
     <div class="info">
-      <div class="row between"><h3>${d.title}</h3>${d.liveCount ? h`<span class="pill live">Live</span>` : ''}</div>
-      <span class="meta">${I.cal}${fmtDate(d.date)}</span>
+      <div class="row between"><h3>${d.title}</h3><span class="pill ${d.finishedAt ? 'done' : d.liveCount ? 'live' : ''}">${d.finishedAt ? 'Ended' : d.liveCount ? 'Live' : 'In progress'}</span></div>
+      <span class="meta">${I.cal}${fmtDate(d.date)}${sessionTime(d) ? ` · ${sessionTime(d)}` : ''}</span>
+      ${d.finishedAt ? h`<span class="pill done">Finished</span>` : ''}
       <span class="meta">${I.court}${FORMATS[d.format].short} · ${d.completedCount}/${d.matchCount} played</span>
       ${d.scorer ? h`<span class="meta">${I.scorer}${d.scorer}</span>` : ''}
       <span class="star">${I.star}${d.potd.length ? d.potd.join(' & ') : 'Pending'}</span>
@@ -373,6 +465,119 @@ function sessionCard(d) {
     <div class="thumb photo" style="${photo(`court-${(d.id % 3) + 1}.jpg`)}"></div>
   </a>`;
 }
+
+// ---------- History ----------
+const validHistoryDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value) && iso(new Date(`${value}T12:00:00`)) === value;
+const monthDate = (month, offset) => {
+  const d = new Date(`${month}-01T12:00:00`);
+  d.setMonth(d.getMonth() + offset);
+  return iso(d);
+};
+
+async function showHistory(date, selectLatest = false) {
+  if (!validHistoryDate(date)) return go(`#/history/${today()}`);
+  const nav = navId;
+  const month = date.slice(0, 7);
+  await fresh(`history:${month}`, () => Promise.all([api(`/api/days?month=${month}`), api(`/api/monthly?month=${month}`)]), ([days, monthly]) => {
+    S.history = { date: selectLatest && days.length ? days[0].date : date, days, monthly, views: null, error: null };
+    renderHistory();
+  });
+  if (nav !== navId || !S.history) return;
+  const selected = S.history.days.filter((day) => day.date === S.history.date);
+  if (!selected.length) return;
+  try {
+    const views = await Promise.all(selected.map((day) => api(`/api/days/${day.id}`)));
+    if (nav !== navId) return;
+    S.history.views = views;
+    renderHistory();
+  } catch (err) {
+    if (nav !== navId) return;
+    S.history.error = err.message;
+    renderHistory();
+  }
+}
+
+function historyMatch(m, view) {
+  const players = (ids) => ids.map((id) => view.people[id] ?? 'Player').join(' & ');
+  const status = { completed: 'Final', live: 'Live', scheduled: 'Scheduled', incomplete: 'Stopped' }[m.status];
+  const score = m.score ?? (m.points ? scoreFromState(replay(view.day.format, m.points)) : null);
+  return h`<li class="history-match">
+    <div class="history-match-top"><span>Court ${m.court} · ${m.kind === 'doubles' ? 'Doubles' : 'Singles'}</span><span class="pill ${m.status === 'completed' ? 'done' : m.status === 'live' ? 'live' : ''}">${status}</span></div>
+    <div class="history-teams"><span class="${m.winner === 'A' ? 'history-winner' : ''}">${players(m.teamA)}</span><span class="history-score">${score ? formatScore(score) : '—'}</span><span class="${m.winner === 'B' ? 'history-winner' : ''}">${players(m.teamB)}</span></div>
+  </li>`;
+}
+
+function historySession(day, view) {
+  const matches = view?.matches ?? [];
+  return h`<section class="card history-session">
+    <div class="row between"><div><span class="eyebrow history-eyebrow">SESSION</span><h3>${day.title}</h3></div><a class="circle" href="#/day/${day.id}" aria-label="Open ${day.title}">${I.arrow}</a></div>
+    <div class="row wrap-row history-tags"><span class="pill">${FORMATS[day.format].short}</span><span class="pill">${day.playerCount} players</span><span class="pill">${day.completedCount}/${day.matchCount} finished</span>${day.finishedAt ? h`<span class="pill done">Session complete</span>` : ''}${sessionTime(day) ? h`<span class="pill">${sessionTime(day)}</span>` : ''}</div>
+    ${day.potd.length ? h`<p class="history-potd">${I.trophy} Player of the Day · ${day.potd.join(' & ')}</p>` : ''}
+    ${day.finishedAt && day.pair?.length ? h`<p class="history-potd">${I.trophy} Pair of the Day · ${day.pair.join(', ')}</p>` : ''}
+    ${day.finishedAt ? h`<div class="row wrap-row"><a class="btn btn-light btn-sm" href="#/day/${day.id}/awards/player">Player award</a><a class="btn btn-light btn-sm" href="#/day/${day.id}/awards/pair">Pair award</a></div>` : ''}
+    <a class="history-open" href="/api/days/${day.id}/report.pdf" download>${I.download} Download daily PDF</a>
+    ${view ? (matches.length ? h`<ol class="list">${matches.map((m) => historyMatch(m, view))}</ol>` : h`<p class="muted small">No matches recorded yet.</p>`)
+      : S.history.error ? h`<p class="muted small">Match details could not load.</p>` : h`<div class="history-detail-loading" aria-label="Loading matches"><div class="skeleton"></div><div class="skeleton"></div></div>`}
+    <a class="history-open" href="#/day/${day.id}">Open full session ${I.arrow}</a>
+  </section>`;
+}
+
+function renderHistory() {
+  const { date, days, monthly, views, error } = S.history;
+  const month = date.slice(0, 7);
+  const first = new Date(`${month}-01T12:00:00`);
+  const monthLabel = first.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  const leading = (first.getDay() + 6) % 7;
+  const count = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+  const dates = [...Array(leading).fill(null), ...Array.from({ length: count }, (_, i) => i + 1)];
+  while (dates.length % 7) dates.push(null);
+  const grouped = new Map();
+  for (const day of days) grouped.set(day.date, [...(grouped.get(day.date) ?? []), day]);
+  const selected = grouped.get(date) ?? [];
+  const completed = days.reduce((n, day) => n + day.completedCount, 0);
+  const previous = monthDate(month, -1).slice(0, 7);
+  const next = monthDate(month, 1).slice(0, 7);
+
+  paint(h`${topbar({ back: '#/', title: 'Match history' })}
+    <div class="wrap history-page">
+      <header class="history-hero photo" style="${photo('hero-day.jpg')}">
+        <span class="eyebrow">MATCH ARCHIVE</span><h1>Every day of play.</h1>
+        <p>${days.length} session${days.length === 1 ? '' : 's'} · ${completed} finished match${completed === 1 ? '' : 'es'} this month</p>
+      </header>
+      ${monthlyPlayerCard(monthly, monthLabel)}
+      <section class="card history-calendar" aria-label="Session calendar">
+        <div class="history-month"><a class="circle" href="#/history/${previous}" aria-label="Previous month">${I.back}</a><h2>${monthLabel}</h2><a class="circle next" href="#/history/${next}" aria-label="Next month">${I.back}</a></div>
+        <label class="history-month-jump"><span>Jump to month</span><input type="month" value="${month}" data-change="historyMonth" aria-label="Jump to month"></label>
+        <div class="history-grid">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((label) => h`<span class="history-weekday">${label}</span>`)}
+          ${dates.map((n) => {
+            if (!n) return h`<span class="history-blank" aria-hidden="true"></span>`;
+            const key = `${month}-${String(n).padStart(2, '0')}`;
+            const sessions = grouped.get(key)?.length ?? 0;
+            return h`<a href="#/history/${key}" class="history-date ${key === date ? 'selected' : ''} ${key === today() ? 'today' : ''}" ${key === today() ? raw('aria-current="date"') : ''} aria-label="${fmtDate(key, { weekday: 'long', day: 'numeric', month: 'long' })}${sessions ? `, ${sessions} session${sessions > 1 ? 's' : ''}` : ', no sessions'}"><span>${n}</span><i class="${sessions ? 'has-session' : ''}"></i></a>`;
+          })}</div>
+        <a class="history-today" href="#/history/${today()}">Jump to today ${I.arrow}</a>
+      </section>
+      <div class="section-head history-date-head"><div><span class="history-date-label">SELECTED DATE</span><h2>${fmtDate(date, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</h2></div><span class="count">${selected.length} session${selected.length === 1 ? '' : 's'}</span></div>
+      ${selected.length ? h`<div class="stack">${selected.map((day, i) => historySession(day, views?.[i]))}</div>`
+        : empty('No play recorded', 'Choose a marked date to see its matches and results.', date === today() ? h`<a class="btn btn-dark" href="#/day/new">Start today’s session</a>` : '')}
+      ${error ? h`<div class="error history-error">${error} <button class="btn btn-light btn-sm" data-act="retryRoute">Retry</button></div>` : ''}
+      ${grouped.size ? h`<div class="section-head"><h2>Dates this month</h2><span class="count">${grouped.size}</span></div><div class="card history-date-list">${[...grouped.entries()].map(([key, sessions]) => h`<a href="#/history/${key}" class="history-date-row"><span>${fmtDate(key, { weekday: 'short', day: 'numeric', month: 'short' })}</span><strong>${sessions.length} session${sessions.length === 1 ? '' : 's'} · ${sessions.reduce((n, s) => n + s.completedCount, 0)} results</strong>${I.arrow}</a>`)}</div>` : ''}
+    </div>`);
+}
+
+function monthlyPlayerCard(monthly, monthLabel) {
+  if (!monthly) return '';
+  const renderAward = (label, award, metric) => {
+    const names = award.winners?.map((w) => w.name).join(' · ');
+    const value = award.winners?.[0]?.[metric] ?? 0;
+    const unit = metric === 'gamesWon' ? 'games won' : 'matches won';
+    return h`<div class="monthly-award"><div class="row between"><span class="eyebrow">${label}</span><span class="pill ${award.status === 'awarded' ? 'done' : ''}">${award.status === 'awarded' ? `${value} ${unit}` : 'Pending'}</span></div><strong>${names || `Needs ${MIN_PARTICIPATION_DAYS} distinct tennis days`}</strong>${names ? h`<span class="meta">${award.winners[0].participationDays} days · ${award.winners.length > 1 ? 'Shared tie' : 'Leader'}</span>` : ''}</div>`;
+  };
+  return h`<section class="card monthly-card"><div class="row between"><div><span class="eyebrow">${monthLabel.toUpperCase()}</span><h2>Player of the Month</h2></div><span class="count">${monthly.sessionCount} tennis day${monthly.sessionCount === 1 ? '' : 's'}</span></div><p class="note">Minimum ${MIN_PARTICIPATION_DAYS} distinct participation days. See both fair ways to crown the month.</p>${renderAward('Most games won', monthly.awards.games, 'gamesWon')}${renderAward('Most matches won', monthly.awards.matches, 'matchWins')}</section>`;
+}
+CHANGE.historyMonth = (_, el) => {
+  if (/^\d{4}-(0[1-9]|1[0-2])$/.test(el.value)) go(`#/history/${el.value}`);
+};
 
 // ---------- Players ----------
 async function showPlayers() {
@@ -459,7 +664,7 @@ ACT.archivePlayer = async ({ id, on }) => {
 async function showNewDay() {
   await fresh('players', () => api('/api/players'), (players) => {
     S.players = players;
-    S.draft ??= { date: today(), title: '', format: 'set', courts: 2, playerIds: [], scorer: readLocal('slice.lastScorer') ?? '' };
+    S.draft ??= { date: today(), title: '', format: 'set', courts: 2, playerIds: [], scorer: readLocal('slice.lastScorer') ?? '', startTime: '', endTime: '' };
     renderNewDay();
   });
 }
@@ -467,14 +672,14 @@ async function showNewDay() {
 const formatCards = (current, change, nameAttr) =>
   h`<div class="formats">${[['set', '6', 'games'], ['mtb', '10', 'points']].map(([id, big, unit]) => h`<label class="format">
     <input type="radio" name="${nameAttr}" value="${id}" ${current === id ? 'checked' : ''} data-change="${change}">
-    <span class="big">${big}</span><strong>${FORMATS[id].short}</strong><span class="muted">${id === 'set' ? 'Tiebreak at 6–6' : 'Win by 2'}</span>
+    <span class="big">${big}</span><strong>${FORMATS[id].short}</strong><span class="muted">${id === 'set' ? 'Tiebreak at 5–5' : 'Win by 2'}</span>
   </label>`)}</div>`;
 
 function renderNewDay() {
   const d = S.draft;
   const active = S.players.filter((p) => !p.archived);
   const n = d.playerIds.length;
-  paint(h`${topbar({ back: '#/', title: 'New session' })}
+  paint(h`${topbar({ back: '#/', title: 'New Tennis' })}
   <div class="wrap">
     <div class="card stack">
       <div class="row" style="gap:12px">
@@ -484,7 +689,8 @@ function renderNewDay() {
           <output>${d.courts}</output><button type="button" data-act="draftCourts" data-d="1" aria-label="More courts">+</button></div></div>
       </div>
       <label class="field"><span>Title</span>
-        <input type="text" maxlength="60" value="${d.title}" placeholder="${fmtDate(d.date, { weekday: 'long' })} session" data-bind="draft" data-key="title"></label>
+        <input type="text" maxlength="60" value="${d.title}" placeholder="${fmtDate(d.date, { weekday: 'long' })} Tennis" data-bind="draft" data-key="title"></label>
+      <div class="row session-times"><label class="field grow"><span>Starts</span><input type="time" value="${d.startTime}" data-bind="draft" data-key="startTime"></label><label class="field grow"><span>Ends</span><input type="time" value="${d.endTime}" data-bind="draft" data-key="endTime"></label></div>
       <label class="field"><span>Scoring today</span>
         <input type="text" maxlength="40" value="${d.scorer}" list="scorerNames" data-bind="draft" data-key="scorer" autocomplete="off"></label>
       <datalist id="scorerNames">${active.map((p) => h`<option value="${p.name}">`)}</datalist>
@@ -577,12 +783,14 @@ function dayHero(publicView = false) {
     <div class="bar">
       ${publicView ? wordmark() : h`<a class="circle glass" href="#/" aria-label="Home">${I.back}</a>`}
       <span class="grow"></span>
-      ${publicView ? h`<span class="pill glass">View only</span>` : h`<button class="circle glass" data-act="share" aria-label="Share player link">${I.share}</button>`}
+      ${publicView ? h`<span class="pill glass">View only</span>` : h`<div class="row hero-actions"><a class="circle glass" href="#/day/${day.id}/setup" aria-label="Edit Tennis">${I.pencil}</a><button class="circle glass" data-act="share" aria-label="Share player link">${I.share}</button></div>`}
     </div>
     <div class="title-block">
       <h1>${day.title}</h1>
       <div class="row wrap-row" style="gap:6px;margin-top:12px">
         <span class="pill glass">${fmtDate(day.date)}</span>
+        ${sessionTime(day) ? h`<span class="pill glass">${I.log} ${sessionTime(day)}</span>` : ''}
+        ${day.finishedAt ? h`<span class="pill glass">${I.check} Finished</span>` : ''}
         <span class="pill glass">${day.formatInfo.short}</span>
         <span class="pill glass">${day.courts} court${day.courts > 1 ? 's' : ''}</span>
         <span class="pill glass">${S.view.present.length} players</span>
@@ -595,7 +803,14 @@ function dayHero(publicView = false) {
 function renderDay() {
   const { tab } = S.route;
   const body = { courts: courtsTab, standings: standingsTab, activity: activityTab, setup: setupTab }[tab]();
-  paint(h`<div class="wrap">${dayHero()}${body}</div>${dayTabs(S.view.day.id, tab)}`);
+  paint(h`<div class="wrap">${dayHero()}${sessionControl()}<a class="report-download" href="/api/days/${S.view.day.id}/report.pdf" download>${I.download}<span>Download daily report</span><strong>PDF</strong></a>${body}</div>${dayTabs(S.view.day.id, tab)}`);
+}
+
+function sessionControl() {
+  const { day, matches } = S.view;
+  if (day.finishedAt) return h`<section class="card session-finished"><span class="eyebrow">TENNIS STOPPED</span><h2>Celebrate the day</h2><p>Final results are saved. Reopen from Setup if you need to make a correction.</p><div class="row wrap-row"><a class="btn btn-lime" href="#/day/${day.id}/awards/player">Player of the Day ${I.arrow}</a><a class="btn btn-light" href="#/day/${day.id}/awards/pair">Pair of the Day ${I.arrow}</a></div></section>`;
+  const live = matches.filter((m) => m.status === 'live').length;
+  return h`<section class="card session-end-control"><div><span class="eyebrow">TENNIS IN PROGRESS</span><h2>Stop Tennis when the courts are done</h2><p>${live ? `${live} live match${live === 1 ? '' : 'es'} will be marked incomplete and excluded from standings.` : 'Stop Tennis to lock the day and reveal both awards.'}</p></div><button type="button" class="btn btn-lime" data-act="finishDay">${I.stop} Stop Tennis</button></section>`;
 }
 
 const byStatus = (s) => S.view.matches.filter((m) => m.status === s);
@@ -607,8 +822,7 @@ function courtsTab() {
   const done = newestFirst(byStatus('completed'));
   const incomplete = byStatus('incomplete');
   return h`
-    ${tip('suggest', 'Start here', 'Suggest builds the next round from who’s free. Edit any slot before you save.')}
-    ${S.plan ? planEditor(S.plan, 'main') : suggestCard()}
+    ${S.view.day.finishedAt ? '' : h`${tip('suggest', 'Start here', 'Suggest builds the next round from who’s free. Edit any slot before you save.')}${S.plan ? planEditor(S.plan, 'main') : suggestCard()}`}
     ${live.length ? h`<div class="section-head"><h2>On court</h2><span class="pill live">${live.length} live</span></div><div class="stack">${live.map((m) => matchCard(m, true))}</div>` : ''}
     ${next.length ? h`<div class="section-head"><h2>Up next</h2><span class="count">${next.length}</span></div><div class="stack">${next.map((m) => matchCard(m, true))}</div>` : ''}
     <div class="section-head"><h2>Results</h2><span class="count">${done.length}</span></div>
@@ -665,7 +879,7 @@ function matchCard(m, organizer) {
   const base = `#/day/${m.dayId}/match/${m.id}`;
   const edit = h`<button class="circle" data-act="lineupModal" data-id="${m.id}" aria-label="Edit match">${I.pencil}</button>`;
   let actions = '';
-  if (organizer) {
+  if (organizer && !S.view.day.finishedAt) {
     if (m.status === 'scheduled') {
       actions = h`<a class="btn btn-lime btn-sm" href="${base}">Start</a><button class="btn btn-light btn-sm" data-act="resultModal" data-id="${m.id}">Enter score</button>${edit}`;
     } else if (m.status === 'live') {
@@ -873,13 +1087,58 @@ function board() {
   return h`<ul class="list card" style="padding:4px 14px">${rows.map((r) => h`<li class="leader ${r.rank === 1 ? 'first' : ''} ${r.eligible ? '' : 'out'}">
     <span class="rk">${r.rank ?? '·'}</span>
     <span class="nm">${r.name}<span class="sub">${r.eligible ? `${r.played} played · ${avg(r)} avg` : r.played ? `${MIN_MATCHES - r.played} more to qualify` : 'Not played'}</span></span>
-    <span class="rec"><b>${r.wins}–${r.losses}</b><span>${pct(r)}</span></span>
+    <span class="rec"><b>${r.wins}–${r.losses}</b><span>${pct(r)}</span><span>${r.gamesWon} games</span></span>
   </li>`)}</ul>`;
 }
 
+function sessionAwardsCard(awards) {
+  if (!awards) return '';
+  const names = (award) => award.winners?.map((w) => w.name).join(' · ') || 'Pending';
+  const stat = (award, key, label) => award.winners?.length ? `${award.winners[0][key]} ${label}` : 'Needs 2 completed matches';
+  return h`<section class="card session-awards"><div class="row between"><div><span class="eyebrow">SESSION RECOGNITION</span><h2>Champions & consolation</h2></div><span class="count">Min 2 matches</span></div><div class="award-line"><span class="award-mark">${I.trophy}</span><div><b>Champions</b><strong>${names(awards.champions)}</strong><span class="meta">${stat(awards.champions, 'wins', 'match wins')}${awards.champions?.shared ? ' · Shared tie' : ''}</span></div></div><div class="award-line"><span class="award-mark secondary">${I.star}</span><div><b>Consolation prize</b><strong>${names(awards.consolation)}</strong><span class="meta">${stat(awards.consolation, 'gamesWon', 'games won')}${awards.consolation?.shared ? ' · Shared tie' : ''}</span></div></div><p class="note">Champions use match wins after two completed matches. Consolation uses games won and skips champion players.</p></section>`;
+}
+
 function standingsTab() {
-  return h`<div style="margin-top:16px">${potdCard(S.view.potd)}${ruleLine()}
+  return h`<div style="margin-top:16px">${potdCard(S.view.potd)}${sessionAwardsCard(S.view.awards)}${ruleLine()}
     <div class="section-head"><h2>Leaderboard</h2><span class="count">Doubles count for both</span></div>${board()}</div>`;
+}
+
+// Two full-screen award moments, available again from a finished session or history.
+async function showAward(id, kind) {
+  await fresh(`day:${id}`, () => api(`/api/days/${id}`), (view) => {
+    S.view = view;
+    renderAward(kind, false);
+  });
+}
+
+function renderAward(kind, publicView) {
+  const { day, potd, pair } = S.view;
+  const isPair = kind === 'pair';
+  const result = isPair ? pair : potd;
+  const winners = result.winners ?? [];
+  const title = isPair ? 'Pair of the Day' : 'Player of the Day';
+  const names = winners.map((w) => isPair ? w.names.join(' & ') : w.name);
+  const back = publicView ? `/v/${readLocal('slice.viewToken') ?? ''}` : `#/day/${day.id}`;
+  const next = publicView ? `/v/${readLocal('slice.viewToken') ?? ''}#/awards/${isPair ? 'player' : 'pair'}` : `#/day/${day.id}/awards/${isPair ? 'player' : 'pair'}`;
+  const count = isPair ? S.view.matches.filter((m) => m.kind === 'doubles' && m.status === 'completed').length : S.view.matches.filter((m) => m.status === 'completed').length;
+  paint(h`<main class="award-screen photo ${isPair ? 'pair-award' : 'player-award'}" style="${photo(isPair ? 'court-2.jpg' : 'potd.jpg;--pos:82% 50%')}">
+    <div class="award-inner">
+      <div class="award-top"><a class="circle glass" href="${back}" aria-label="Back to session">${I.back}</a>${wordmark()}<span class="award-step">${isPair ? '02 / 02' : '01 / 02'}</span></div>
+      <div class="award-content">
+        <div class="award-emblem" aria-hidden="true">${I.trophy}</div>
+        <p class="award-kicker">${day.title} · ${fmtDate(day.date)}</p>
+        <h1>${title}</h1>
+        ${day.finishedAt ? h`${winners.length ? h`<p class="award-label">${result.shared ? 'Shared by' : 'Congratulations'}</p><p class="award-winners">${names.join(' · ')}</p>
+          <div class="award-stats"><span>${winners[0].wins} win${winners[0].wins === 1 ? '' : 's'}</span><span>${Math.round(winners[0].winPct * 100)}% wins</span><span>${winners[0].played} match${winners[0].played === 1 ? '' : 'es'}</span></div>`
+          : h`<p class="award-empty">${isPair ? 'No completed doubles matches yet, so there is no pair to crown.' : `No player reached ${MIN_MATCHES} completed matches, so this award remains open.`}</p>`}`
+          : h`<p class="award-empty">Finish the session to reveal this award.</p>`}
+      </div>
+      <div class="award-bottom"><p>${count} completed ${isPair ? 'doubles ' : ''}match${count === 1 ? '' : 'es'} · ${APP_NAME}</p>
+        <a class="btn btn-lime cta btn-block" href="${next}"><span>${isPair ? 'See Player of the Day' : 'See Pair of the Day'}</span><span class="arrow">${I.arrow}</span></a>
+        <a class="award-back" href="${publicView ? `/api/public/${readLocal('slice.viewToken') ?? ''}/report.pdf` : `/api/days/${day.id}/report.pdf`}" download>${I.download} Download daily PDF</a>
+        <a class="award-back" href="${back}">Back to session</a></div>
+    </div>
+  </main>`);
 }
 
 // ---------- Activity ----------
@@ -902,6 +1161,7 @@ function activityTab() {
 let allPlayersCache = null;
 function setupTab() {
   const { day } = S.view;
+  const finished = !!day.finishedAt;
   const presentIds = new Set(S.view.present.map((p) => p.id));
   const players = (allPlayersCache ?? S.view.present).filter((p) => !p.archived || presentIds.has(p.id));
   if (!allPlayersCache) api('/api/players').then((p) => { allPlayersCache = p; if (S.route?.tab === 'setup') renderDay(); });
@@ -909,17 +1169,22 @@ function setupTab() {
   const url = `${location.origin}/v/${day.shareToken}`;
   return h`
     <div class="section-head"><h2>Who’s here</h2><span class="count">${presentIds.size}</span></div>
-    <div class="chips">${players.map((p) => h`<button type="button" class="chip" aria-pressed="${presentIds.has(p.id)}" data-act="togglePresent" data-id="${p.id}"><span class="tick">${I.check}</span>${p.name}</button>`)}</div>
+    <div class="chips">${players.map((p) => h`<button type="button" class="chip" aria-pressed="${presentIds.has(p.id)}" data-act="togglePresent" data-id="${p.id}" ${finished ? 'disabled' : ''}><span class="tick">${I.check}</span>${p.name}</button>`)}</div>
+    ${finished ? h`<p class="note">Reopen Tennis to change players or matches.</p>` : ''}
+    ${!finished ? h`
     <label class="field" for="dayAdd" style="margin-top:14px"><span>Someone new</span></label>
     <form class="row" data-form="dayAddPlayer"><input id="dayAdd" type="text" name="name" maxlength="40" required autocomplete="off"><button class="btn btn-light" type="submit">Add</button></form>
-    <div class="error" data-error hidden id="dayAddError" style="margin-top:10px"></div>
+    <div class="error" data-error hidden id="dayAddError" style="margin-top:10px"></div>` : ''}
 
-    <div class="section-head"><h2>Session</h2></div>
+    <div class="section-head"><h2>Tennis</h2></div>
     <div class="card stack">
-      <div class="row between"><span style="font-weight:600">Courts</span>
+      ${!finished ? h`<div class="row between"><span style="font-weight:600">Courts</span>
         <div class="stepper"><button type="button" data-act="dayCourts" data-d="-1" aria-label="Fewer courts">−</button><output>${day.courts}</output><button type="button" data-act="dayCourts" data-d="1" aria-label="More courts">+</button></div></div>
+      ` : h`<p class="note">${day.courts} court${day.courts === 1 ? '' : 's'} · Finished ${fmtDate(day.date)}</p>`}
       <form class="stack" data-form="daySession">
+        <label class="field"><span>Date</span><input type="date" name="date" value="${day.date}" required></label>
         <label class="field"><span>Title</span><input type="text" name="title" value="${day.title}" maxlength="60"></label>
+        <div class="row session-times"><label class="field grow"><span>Starts</span><input type="time" name="startTime" value="${day.startTime ?? ''}"></label><label class="field grow"><span>Ends</span><input type="time" name="endTime" value="${day.endTime ?? ''}"></label></div>
         <label class="field"><span>Scoring today</span><input type="text" name="scorer" value="${day.scorer ?? ''}" maxlength="40" list="dayScorerNames" autocomplete="off"></label>
         <datalist id="dayScorerNames">${S.view.present.map((p) => h`<option value="${p.name}">`)}</datalist>
         <div class="error" data-error hidden></div>
@@ -928,7 +1193,7 @@ function setupTab() {
     </div>
 
     <div class="section-head"><h2>Format</h2>${started ? h`<span class="count">Locked</span>` : ''}</div>
-    ${started
+    ${started || finished
       ? h`<div class="card"><strong>${day.formatInfo.name}</strong><p class="note" style="margin-top:4px">${day.formatInfo.rule}</p></div>`
       : formatCards(day.format, 'dayFormat', 'dayformat')}
 
@@ -939,18 +1204,75 @@ function setupTab() {
       <div class="row"><button class="btn btn-lime grow" data-act="share">${I.share} Share</button><a class="btn btn-light" href="${url}" target="_blank" rel="noopener">Open</a></div>
     </div>
 
-    <div class="section-head"><h2>Delete session</h2></div>
-    <button class="btn btn-danger btn-block" data-act="deleteDay">Delete “${day.title}”</button>`;
+    <div class="section-head"><h2>${finished ? 'Awards' : 'Stop Tennis'}</h2></div>
+    ${finished ? h`<div class="card stack"><p class="note">Stopped ${fmtTime(day.finishedAt)}. Results are locked until reopened.</p><a class="btn btn-lime btn-block" href="#/day/${day.id}/awards/player">Celebrate Player of the Day</a><a class="btn btn-light btn-block" href="#/day/${day.id}/awards/pair">Celebrate Pair of the Day</a><button class="btn btn-text btn-block" data-act="reopenDay">Reopen Tennis</button></div>`
+      : h`<div class="card stack stop-session-card"><p class="note">Stop Tennis when play is finished. Any live matches will be stopped and will not count in standings. Waiting matches remain available until you stop the day.</p><button class="btn btn-lime btn-block" data-act="finishDay">${I.stop} Stop Tennis</button></div>`}
+
+    <div class="section-head"><h2>Danger zone</h2></div>
+    <div class="card danger-zone"><span class="eyebrow">PERMANENT</span><h3>Delete this Tennis</h3><p>Removes the day, its matches, awards and activity log. This cannot be undone.</p><button class="btn btn-danger btn-block" data-act="deleteDay">Delete Tennis</button></div>`;
 }
 
-ACT.deleteDay = async () => {
+ACT.deleteDay = () => {
+  S.modal = { type: 'deleteDay', confirm: '' };
+  paintModal();
+};
+
+function finishDaySheet() {
   const { day, matches } = S.view;
-  const done = matches.filter((m) => m.status === 'completed').length;
-  if (!confirm(`Delete “${day.title}”?${done ? ` Its ${done} result${done > 1 ? 's' : ''} and the log go with it.` : ''} This can’t be undone.`)) return;
+  const live = matches.filter((m) => m.status === 'live').length;
+  const waiting = matches.filter((m) => m.status === 'scheduled').length;
+  return h`${sheetHead('Stop Tennis?')}
+    <div class="decision-hero stop-decision"><span class="decision-icon">${I.stop}</span><div><strong>Stop this Tennis day</strong><p>Live play will stop now. Completed results stay saved.</p></div></div>
+    <ul class="decision-list"><li><span>${I.stop}</span><b>${live}</b><span>live match${live === 1 ? '' : 'es'} marked incomplete and excluded</span></li><li><span>${I.court}</span><b>${waiting}</b><span>waiting match${waiting === 1 ? '' : 'es'} left without a result</span></li><li><span>${I.check}</span><b>0</b><span>completed results changed</span></li></ul>
+    <p class="note">You can reopen Tennis later from Setup. Stop only the current match if you want the rest of the day to continue.</p>
+    <button class="btn btn-lime btn-block" data-act="confirmFinishDay">${I.stop} Stop Tennis</button>
+    <button class="btn btn-text btn-block" data-act="closeModal">Keep playing</button>`;
+}
+
+function deleteDaySheet() {
+  const { day, matches } = S.view;
+  const completed = matches.filter((m) => m.status === 'completed').length;
+  return h`${sheetHead('Delete Tennis?')}
+    <div class="decision-hero delete-decision"><span class="decision-icon">${I.x}</span><div><strong>This is permanent</strong><p>Everything in “${day.title}” will be removed.</p></div></div>
+    <ul class="decision-list"><li><span>${I.cal}</span><b>1</b><span>Tennis day deleted</span></li><li><span>${I.court}</span><b>${matches.length}</b><span>match${matches.length === 1 ? '' : 'es'} removed</span></li><li><span>${I.check}</span><b>${completed}</b><span>completed result${completed === 1 ? '' : 's'} lost</span></li></ul>
+    <label class="field"><span>Type DELETE to confirm</span><input type="text" value="${S.modal.confirm}" data-bind="deleteConfirm" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-describedby="deleteHelp"></label>
+    <p class="note" id="deleteHelp">Use Stop Tennis if you only want to end play and keep the record.</p>
+    <button class="btn btn-danger btn-block" id="confirmDeleteDay" data-act="confirmDeleteDay" disabled>Delete Tennis permanently</button>
+    <button class="btn btn-text btn-block" data-act="closeModal">Keep Tennis</button>`;
+}
+
+ACT.confirmFinishDay = async () => {
+  const { day, matches } = S.view;
+  const live = matches.filter((m) => m.status === 'live').length;
+  await api(`/api/days/${day.id}/finish`, { method: 'POST', body: { stopLive: live > 0 } });
+  S.modal = null;
+  paintModal();
+  CACHE.delete(`day:${day.id}`);
+  S.plan = null;
+  go(`#/day/${day.id}/awards/player`);
+};
+
+BIND.deleteConfirm = (_, el) => {
+  S.modal.confirm = el.value.toUpperCase();
+  el.value = S.modal.confirm;
+  const button = document.getElementById('confirmDeleteDay');
+  if (button) button.disabled = S.modal.confirm !== 'DELETE';
+};
+
+ACT.confirmDeleteDay = async () => {
+  if (S.modal.confirm !== 'DELETE') return;
+  const { day } = S.view;
   await api(`/api/days/${day.id}`, { method: 'DELETE' });
+  S.modal = null;
+  paintModal();
   S.view = null;
-  toast('Session deleted');
+  toast('Tennis deleted');
   go('#/');
+};
+
+ACT.finishDay = () => {
+  S.modal = { type: 'finishDay' };
+  paintModal();
 };
 
 async function patchDay(body) {
@@ -976,10 +1298,16 @@ CHANGE.dayFormat = async (_, el) => {
     renderDay();
   }
 };
-FORM.daySession = async ({ title, scorer }) => {
-  await patchDay({ title, scorer });
+FORM.daySession = async ({ date, title, scorer, startTime, endTime }) => {
+  await patchDay({ date, title, scorer, startTime, endTime });
   if (scorer.trim()) store('slice.lastScorer', scorer.trim());
   toast('Saved');
+};
+ACT.reopenDay = async () => {
+  await api(`/api/days/${S.view.day.id}/reopen`, { method: 'POST' });
+  await loadDay(S.view.day.id);
+  renderDay();
+  toast('Session reopened');
 };
 FORM.dayAddPlayer = async ({ name: n }) => {
   try {
@@ -1004,6 +1332,7 @@ async function showMatch(dayId, matchId) {
   await fresh(`day:${dayId}`, () => api(`/api/days/${dayId}`), (view) => {
     if (pending) return; // never overwrite taps that are still on their way to the server
     S.view = view;
+    if (view.day.finishedAt) return go(`#/day/${dayId}`);
     if (!S.view.matches.some((m) => m.id === matchId)) throw new Error('That match was removed.');
     if (!S.modal) renderMatch();
   });
@@ -1051,20 +1380,21 @@ function renderMatch() {
     : m.status === 'incomplete'
       ? h`<button class="btn btn-lime" data-act="reopenHere">Resume</button><a class="btn btn-glass" href="#/day/${m.dayId}">Back</a>`
       : h`<button class="btn btn-glass" data-act="undo" ${m.points ? '' : 'disabled'}>${I.undo} Undo</button>
-          <button class="btn btn-glass" data-act="resultModal" data-id="${m.id}">Final score</button>`;
+          <button class="btn btn-glass" data-act="resultModal" data-id="${m.id}">Final score</button>
+          <button class="btn btn-stop-match" data-act="incomplete">${I.stop} Stop match</button>`;
 
   paint(h`<div class="scoring photo">
     <div class="bar">
       <a class="circle glass" href="#/day/${m.dayId}" aria-label="Back">${I.back}</a>
       <span class="title">Court ${m.court} · ${S.view.day.formatInfo.short}${S.view.day.scorer ? h`<small>${I.scorer} ${S.view.day.scorer}</small>` : ''}</span>
-      ${over ? h`<span style="width:44px"></span>` : h`<button class="circle glass" data-act="incomplete" aria-label="Stop match">${I.stop}</button>`}
+      ${over ? h`<span style="width:44px"></span>` : h`<button class="btn btn-stop-tennis btn-sm" data-act="finishDay">${I.stop}<span>Stop Tennis</span></button>`}
     </div>
     <div class="board-glass glass" role="group" aria-label="Scoreboard">
       ${isSet ? h`<div class="sb-row sb-head"><span></span><span style="text-align:center">Games</span><span style="text-align:center">${st?.tiebreak && !over ? 'TB' : 'Point'}</span></div>` : ''}
       ${row('A', 0, m.teamA)}${row('B', 1, m.teamB)}
     </div>
     <div class="state-line">${state}</div>
-    ${over ? '' : tip('score', 'Tap a side to give them the point', 'Undo fixes a slip. The square button stops the match.', true)}
+    ${over ? '' : tip('score', 'Tap a side to give them the point', 'Undo fixes a slip. Stop match ends only this court; Stop Tennis ends the whole Tennis day.', true)}
     ${main}
     <div class="tools">${tools}</div>
   </div>`);
@@ -1119,13 +1449,10 @@ ACT.undo = () => {
   enqueue(`/api/matches/${m.id}/undo`, { at });
 };
 
-ACT.incomplete = async () => {
+ACT.incomplete = () => {
   const m = current();
-  const note = prompt('Stop this match? It won’t count.\n\nReason (optional):', '');
-  if (note === null) return;
-  await queue;
-  applyServer(await api(`/api/matches/${m.id}/incomplete`, { method: 'POST', body: { note } }));
-  renderMatch();
+  S.modal = { type: 'incomplete', id: m.id, note: '' };
+  paintModal();
 };
 ACT.reopenHere = async () => {
   applyServer(await api(`/api/matches/${current().id}/reopen`, { method: 'POST' }));
@@ -1133,23 +1460,59 @@ ACT.reopenHere = async () => {
 };
 
 // ---------- Sheets: manual score & lineup ----------
+function incompleteSheet() {
+  const m = S.view.matches.find((x) => x.id === S.modal.id);
+  return h`${sheetHead('Stop this match?')}
+    <div class="decision-hero match-decision"><span class="decision-icon">${I.stop}</span><div><strong>This court only</strong><p>The match becomes incomplete and will not count in standings.</p></div></div>
+    <label class="field"><span>Reason (optional)</span><input type="text" maxlength="200" value="${S.modal.note}" data-bind="incompleteNote" placeholder="Rain, injury, time…"></label>
+    <p class="note">The rest of Tennis keeps running. Use Stop Tennis above if the whole day is finished.</p>
+    <button class="btn btn-danger btn-block" data-act="confirmIncomplete">${I.stop} Stop match</button>
+    <button class="btn btn-text btn-block" data-act="closeModal">Keep playing</button>`;
+}
+
+BIND.incompleteNote = (_, el) => {
+  S.modal.note = el.value;
+};
+
+ACT.confirmIncomplete = async () => {
+  const md = S.modal;
+  await queue;
+  applyServer(await api(`/api/matches/${md.id}/incomplete`, { method: 'POST', body: { note: md.note } }));
+  S.modal = null;
+  paintModal();
+  renderMatch();
+};
+
 function paintModal() {
   if (!S.modal) {
+    clearTimeout(modalCloseTimer);
     $modal.innerHTML = '';
     document.body.style.overflow = '';
     return;
   }
+  clearTimeout(modalCloseTimer);
   const fresh = !$modal.firstChild;
+  if (fresh) modalReturnFocus = document.activeElement;
   document.body.style.overflow = 'hidden';
-  const body = { result: resultSheet, lineup: lineupSheet }[S.modal.type]();
-  $modal.innerHTML = part(h`<div class="overlay" data-act="overlay" style="${fresh ? '' : 'animation:none'}"><div class="sheet stack" role="dialog" aria-modal="true" style="${fresh ? '' : 'animation:none'}"><div class="grabber"></div>${body}</div></div>`);
+  const body = { result: resultSheet, lineup: lineupSheet, finishDay: finishDaySheet, deleteDay: deleteDaySheet, incomplete: incompleteSheet }[S.modal.type]();
+  const labels = { result: 'Match result', lineup: 'Match lineup', finishDay: 'Stop Tennis', deleteDay: 'Delete Tennis', incomplete: 'Stop match' };
+  $modal.innerHTML = part(h`<div class="overlay" data-act="overlay" style="${fresh ? '' : 'animation:none'}"><div class="sheet stack" role="dialog" aria-modal="true" aria-label="${labels[S.modal.type]}" style="${fresh ? '' : 'animation:none'}"><div class="grabber"></div>${body}</div></div>`);
+  if (fresh) requestAnimationFrame(() => $modal.querySelector('.sheet [aria-label="Close"]')?.focus());
 }
+let modalCloseTimer;
+let modalReturnFocus;
 ACT.overlay = (_, el, e) => {
   if (e.target === el) ACT.closeModal();
 };
 ACT.closeModal = () => {
+  if (!S.modal) return;
   S.modal = null;
-  paintModal();
+  $modal.querySelector('.overlay')?.classList.add('closing');
+  modalCloseTimer = setTimeout(() => {
+    paintModal();
+    if (modalReturnFocus?.isConnected) modalReturnFocus.focus();
+    modalReturnFocus = null;
+  }, 200);
 };
 
 ACT.resultModal = ({ id }) => {
@@ -1171,7 +1534,7 @@ function resultSheet() {
   const md = S.modal;
   const m = S.view.matches.find((x) => x.id === md.id);
   const format = S.view.day.format;
-  const showTb = format === 'set' && Math.max(md.a, md.b) === 7 && Math.min(md.a, md.b) === 6;
+  const showTb = format === 'set' && ((Math.max(md.a, md.b) === 6 && Math.min(md.a, md.b) === 5) || (Math.max(md.a, md.b) === 7 && Math.min(md.a, md.b) === 6));
   const check = validateResult(format, { a: md.a, b: md.b, tb: showTb ? md.tb.map((v) => (v === '' ? null : Number(v))) : null });
   const stepper = (k) => h`<div class="stepper"><button type="button" data-act="rs" data-k="${k}" data-d="-1" aria-label="Minus">−</button><output>${md[k]}</output><button type="button" data-act="rs" data-k="${k}" data-d="1" aria-label="Plus">+</button></div>`;
   return h`${sheetHead(md.correcting ? 'Correct score' : 'Final score')}
@@ -1211,7 +1574,7 @@ BIND.rnote = (_, el) => {
 };
 ACT.saveResult = async () => {
   const md = S.modal;
-  const showTb = S.view.day.format === 'set' && Math.max(md.a, md.b) === 7 && Math.min(md.a, md.b) === 6;
+  const showTb = S.view.day.format === 'set' && ((Math.max(md.a, md.b) === 6 && Math.min(md.a, md.b) === 5) || (Math.max(md.a, md.b) === 7 && Math.min(md.a, md.b) === 6));
   const tb = showTb && md.tb.some((v) => v !== '') ? md.tb.map((v) => (v === '' ? null : Number(v))) : null;
   await queue;
   const updated = await api(`/api/matches/${md.id}/result`, { method: 'POST', body: { score: { a: md.a, b: md.b, tb }, note: md.note } });
@@ -1382,7 +1745,7 @@ function bindIntroSwipe() {
   root.addEventListener('pointercancel', end);
 }
 
-// ---------- Install (everyone in the group keeps Slice on their phone) ----------
+// ---------- Install (everyone in the group keeps the app on their phone) ----------
 let installEvent = null;
 const UA = navigator.userAgent;
 const isIOS = /iphone|ipad|ipod/i.test(UA) || (/Macintosh/.test(UA) && navigator.maxTouchPoints > 1);
@@ -1396,7 +1759,7 @@ const canInstall = () => !isStandalone() && (installEvent || isIOS);
 
 function installTip() {
   if (!canInstall() || seen('tip.install')) return '';
-  return h`<div class="tip install" role="note"><div class="grow"><b>Keep Slice on your phone</b>
+  return h`<div class="tip install" role="note"><div class="grow"><b>Keep ${APP_NAME} on your phone</b>
     <p>${installEvent ? 'One tap and it opens like an app.' : 'Add it to your home screen in three taps.'}</p>
     ${installEvent ? h`<button class="btn btn-lime btn-sm" data-act="install" style="margin-top:10px">Install</button>` : h`<a class="btn btn-lime btn-sm" href="/install" style="margin-top:10px">Show me how</a>`}</div>
     <button class="circle" data-act="dismissTip" data-key="install" aria-label="Dismiss">${I.x}</button></div>`;
@@ -1440,21 +1803,21 @@ function renderInstall() {
   const openHref = viewToken ? `/v/${viewToken}` : '/';
   let body;
   if (isStandalone()) {
-    body = h`<h2>Slice is on this phone</h2><p class="note">Open it from your home screen any time.</p>
-      <a class="btn btn-lime cta btn-block" href="${openHref}"><span>Open Slice</span><span class="arrow">${I.arrow}</span></a>`;
+    body = h`<h2>${APP_NAME} is on this phone</h2><p class="note">Open it from your home screen any time.</p>
+      <a class="btn btn-lime cta btn-block" href="${openHref}"><span>Open ${APP_NAME}</span><span class="arrow">${I.arrow}</span></a>`;
   } else if (installEvent) {
-    body = h`<h2>Install Slice</h2><p class="note">It sits on your home screen and opens full screen, like any app.</p>
+    body = h`<h2>Install ${APP_NAME}</h2><p class="note">It sits on your home screen and opens full screen, like any app.</p>
       ${cta('Install', 'data-act="install"')}`;
   } else if (isIOS && !isIOSSafari) {
     body = h`<h2>Open this page in Safari</h2><p class="note">iPhone can only add apps to the home screen from Safari.</p>
       ${installSteps([[I.share, 'Copy this link'], [I.arrow, 'Paste it into Safari'], [addIcon, 'Follow the steps there']])}
       <button class="btn btn-dark btn-block" data-act="copyInstall">Copy link</button>`;
   } else if (isIOS) {
-    body = h`<h2>Add Slice to your iPhone</h2>
+    body = h`<h2>Add ${APP_NAME} to your iPhone</h2>
       ${installSteps([[shareIcon, h`Tap <b>Share</b> in Safari’s toolbar`], [addIcon, h`Scroll and tap <b>Add to Home Screen</b>`], [I.check, h`Tap <b>Add</b>`]])}
-      <p class="note">Slice then opens from its own icon, full screen.</p>`;
+      <p class="note">${APP_NAME} then opens from its own icon, full screen.</p>`;
   } else if (isAndroid) {
-    body = h`<h2>Add Slice to your phone</h2>
+    body = h`<h2>Add ${APP_NAME} to your phone</h2>
       ${installSteps([[moreIcon, h`Open Chrome’s <b>menu</b> (three dots)`], [addIcon, h`Tap <b>Install app</b> or <b>Add to Home screen</b>`], [I.check, h`Tap <b>Install</b>`]])}`;
   } else {
     body = h`<h2>Open this on your phone</h2><p class="note">Send yourself this link, open it on the phone, and follow the steps for iPhone or Android.</p>
@@ -1462,8 +1825,8 @@ function renderInstall() {
       <button class="btn btn-dark btn-block" data-act="copyInstall">Copy link</button>`;
   }
   paint(h`<div class="install-page photo" style="${photo('hero-signin.jpg')}">
-    <div class="head"><img src="/icon-192.png" alt="" width="84" height="84"><h1>Slice</h1><p class="sub">Sridhar’s Tennis Academy</p></div>
-    <section class="sheet-card stack">${body}</section>
+    <div class="head"><img src="/icon-192.png" alt="" width="84" height="84"><h1 class="install-brand">${brandCopy()}</h1><p class="sub">Sridhar’s Tennis Academy</p></div>
+    <section class="sheet-card stack">${body}<a class="btn btn-light btn-block" href="/">Open app</a></section>
   </div>`);
 }
 
@@ -1471,7 +1834,7 @@ ACT.shareInstall = async () => {
   const url = installUrl();
   if (navigator.share) {
     try {
-      await navigator.share({ title: 'Slice', text: 'Get Slice on your phone', url });
+      await navigator.share({ title: APP_NAME, text: `Get ${APP_NAME} on your phone`, url });
       return;
     } catch { /* fall back to copying */ }
   }
@@ -1512,14 +1875,14 @@ function renderSettings() {
 
     <div class="section-head"><h2>Get the app</h2></div>
     <div class="card list-actions">
-      ${isStandalone() ? '' : h`<button data-act="install">${addIcon}<span class="grow">Add Slice to this phone</span>${I.arrow}</button>`}
+      ${isStandalone() ? '' : h`<button data-act="install">${addIcon}<span class="grow">Add ${APP_NAME} to this phone</span>${I.arrow}</button>`}
       <button data-act="shareInstall">${I.share}<span class="grow">Send the install link to the group</span>${I.arrow}</button>
     </div>
     <div class="section-head"><h2>Account</h2></div>
     <div class="card list-actions">
       <button data-act="logout">${I.out}<span class="grow">Sign out of this device</span></button>
     </div>
-    <p class="foot">Slice v1 · Sridhar’s Tennis Academy</p>
+    <p class="foot">${APP_NAME} · Sridhar’s Tennis Academy</p>
   </div>
   ${homeTabs('settings')}`);
 }
@@ -1536,21 +1899,41 @@ ACT.resetTips = () => {
 };
 
 // ---------- Public, read-only player view ----------
+let publicVisibilityHandler;
 async function showPublic(token) {
+  const nav = navId;
+  let lastJson = null;
+  let inFlight = false;
+  if (publicVisibilityHandler) document.removeEventListener('visibilitychange', publicVisibilityHandler);
   const load = async () => {
+    if (inFlight || nav !== navId) return;
+    inFlight = true;
     try {
       const res = await fetch(`/api/public/${encodeURIComponent(token)}`, { cache: 'no-store' });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      S.view = data;
-      renderPublic();
+      if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+      if (nav !== navId) return;
+      connection();
+      const json = JSON.stringify(data);
+      if (json !== lastJson) {
+        S.view = data;
+        lastJson = json;
+        if (location.hash.match(/^#\/awards\/(player|pair)$/)) renderAward(location.hash.split('/').at(-1), true);
+        else renderPublic();
+      }
     } catch (err) {
-      if (!S.view) paint(h`<div class="wrap" style="padding-top:40px">${empty('Link not found', err.message || 'Ask your organizer for a new link.')}</div>`);
+      if (nav !== navId) return;
+      if (lastJson) connection('Live updates paused. Retrying automatically.');
+      else paint(h`<div class="wrap" style="padding-top:40px">${empty('Couldn’t open the live view', err.message || 'Check the link and try again.', h`<button class="btn btn-dark" data-act="retryRoute">Try again</button>`)}</div>`);
+    } finally {
+      inFlight = false;
     }
   };
   await load();
+  if (nav !== navId) return;
   pollTimer = setInterval(() => document.visibilityState === 'visible' && load(), 10000);
-  document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && load());
+  publicVisibilityHandler = () => { if (document.visibilityState === 'visible') load(); };
+  document.addEventListener('visibilitychange', publicVisibilityHandler);
 }
 
 function renderPublic() {
@@ -1560,6 +1943,8 @@ function renderPublic() {
   const incomplete = byStatus('incomplete');
   paint(h`<div class="wrap">
     ${dayHero(true)}
+    <a class="report-download" href="/api/public/${readLocal('slice.viewToken') ?? ''}/report.pdf" download>${I.download}<span>Download daily report</span><strong>PDF</strong></a>
+    ${S.view.day.finishedAt ? h`<section class="card session-finished"><span class="eyebrow">SESSION COMPLETE</span><h2>Celebrate the day</h2><div class="row wrap-row"><a class="btn btn-lime" href="#/awards/player">Player award</a><a class="btn btn-light" href="#/awards/pair">Pair award</a></div></section>` : ''}
     <div class="install-slot">${installTip()}</div>
     ${tip('viewer', 'Live view', 'Scores and standings update on their own.')}
     <div style="margin-top:16px">${potdCard(S.view.potd)}${ruleLine()}</div>

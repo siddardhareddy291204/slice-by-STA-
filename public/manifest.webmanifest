@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "Slice · Sridhar’s Tennis Academy",
-  "short_name": "Slice",
+  "name": "Slice by STA",
+  "short_name": "Slice by STA",
   "description": "Fair matchups, live scores and a Player of the Day for your tennis group.",
   "start_url": "/",
   "scope": "/",

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Store, HttpError } from './store.js';
+import { renderSessionPdf, reportFilename } from './report.js';
 
 export { HttpError };
 
@@ -112,11 +113,18 @@ export async function createApp({ dbFile, rootDir }) {
   on('POST', '/api/players', 'organizer', ({ body }) => store.addPlayer(body.name));
   on('PATCH', '/api/players/(\\d+)', 'organizer', ({ params, body }) => store.updatePlayer(id(params[0]), body));
 
-  on('GET', '/api/days', 'organizer', () => store.listDays());
+  on('GET', '/api/days', 'organizer', ({ url }) => store.listDays({ month: url.searchParams.get('month') ?? undefined }));
+  on('GET', '/api/monthly', 'organizer', ({ url }) => store.monthlyView(url.searchParams.get('month') ?? ''));
   on('POST', '/api/days', 'organizer', ({ body }) => store.createDay(body));
   on('GET', '/api/days/(\\d+)', 'organizer', async ({ params }) => store.dayView(id(params[0]), { organizer: true }));
+  on('GET', '/api/days/(\\d+)/report.pdf', 'organizer', async ({ params }) => {
+    const view = await store.dayView(id(params[0]), { organizer: true });
+    return { pdf: await renderSessionPdf(view), filename: reportFilename(view.day) };
+  });
   on('DELETE', '/api/days/(\\d+)', 'organizer', ({ params }) => store.deleteDay(id(params[0])));
   on('PATCH', '/api/days/(\\d+)', 'organizer', ({ params, body }) => store.updateDay(id(params[0]), body));
+  on('POST', '/api/days/(\\d+)/finish', 'organizer', ({ params, body }) => store.finishDay(id(params[0]), body));
+  on('POST', '/api/days/(\\d+)/reopen', 'organizer', ({ params }) => store.reopenDay(id(params[0])));
   on('POST', '/api/days/(\\d+)/suggest', 'organizer', ({ params, body }) => store.suggest(id(params[0]), body));
   on('POST', '/api/days/(\\d+)/matches', 'organizer', ({ params, body }) => store.createMatches(id(params[0]), body.matches));
 
@@ -130,6 +138,10 @@ export async function createApp({ dbFile, rootDir }) {
   on('POST', '/api/matches/(\\d+)/reopen', 'organizer', ({ params }) => store.reopen(id(params[0])));
 
   on('GET', '/api/public/([\\w-]+)', 'public', async ({ params }) => store.dayView(params[0], { organizer: false, byToken: true }));
+  on('GET', '/api/public/([\\w-]+)/report.pdf', 'public', async ({ params }) => {
+    const view = await store.dayView(params[0], { organizer: false, byToken: true });
+    return { pdf: await renderSessionPdf(view), filename: reportFilename(view.day) };
+  });
 
   function sessionCookie(token) {
     const secure = process.env.VERCEL || process.env.NODE_ENV === 'production' ? '; Secure' : '';
@@ -148,7 +160,7 @@ export async function createApp({ dbFile, rootDir }) {
     if (req.method !== 'GET' && req.headers['x-slice'] !== '1') throw new HttpError(403, 'Missing request header.');
     const body = req.method === 'GET' ? {} : await readJson(req);
     const params = url.pathname.match(route.pattern).slice(1);
-    return await route.fn({ req, res, body, params, token, organizer });
+    return await route.fn({ req, res, body, params, token, organizer, url });
   }
 
   function serveFile(res, file) {
@@ -185,6 +197,15 @@ export async function createApp({ dbFile, rootDir }) {
     }
     try {
       const result = await handleApi(req, res, url);
+      if (result?.pdf) {
+        res.writeHead(200, {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': `attachment; filename="${result.filename}"`,
+          'Content-Length': result.pdf.length,
+          'Cache-Control': 'no-store',
+        });
+        return res.end(result.pdf);
+      }
       send(res, 200, result ?? { ok: true });
     } catch (err) {
       const status = err.status ?? 500;

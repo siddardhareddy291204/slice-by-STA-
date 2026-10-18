@@ -1,6 +1,6 @@
-# Slice — Image Brief for the Image Model
+# Slice by STA — Image Brief for the Image Model
 
-Photographs for the Slice app (Sridhar’s Tennis Academy). The app is a **mobile tennis-day organizer**: dark forest-green photographic headers, a tennis-ball **lime** accent, white rounded cards and floating glass controls.
+Photographs for the Slice by STA app (Sridhar’s Tennis Academy). The app is a **mobile tennis-day organizer**: dark forest-green photographic headers, a tennis-ball **lime** accent, white rounded cards and floating glass controls.
 
 Make every image **photorealistic, editorial sports photography**, never illustration or 3D render. The UI places white text and glass buttons over these photos, so each brief says where the image must stay quiet.
 

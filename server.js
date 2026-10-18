@@ -13,7 +13,7 @@ const server = http.createServer(handler);
 
 server.listen(port, async () => {
   const lan = Object.values(os.networkInterfaces()).flat().find((i) => i && i.family === 'IPv4' && !i.internal);
-  console.log(`Slice is running at http://localhost:${port}`);
+  console.log(`Slice by STA is running at http://localhost:${port}`);
   if (lan) console.log(`On the same Wi-Fi, phones can open http://${lan.address}:${port}`);
   if (!(await store.hasPassword())) console.log('No organizer password yet — the first visit will ask you to set one.');
 });

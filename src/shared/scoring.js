@@ -7,7 +7,7 @@ export const FORMATS = {
     id: 'set',
     name: 'Standard set',
     short: 'One set',
-    rule: 'One set: first to 6 games, win by 2. At 6–6 a 7-point tiebreak (win by 2) decides it. Deuce and advantage apply.',
+    rule: 'One set: first to 6 games. At 5–5 a 7-point tiebreak (win by 2) decides it. Deuce and advantage apply.',
     unit: 'games',
   },
   mtb: {
@@ -28,7 +28,7 @@ const sideIndex = (side) => {
 export function newState(format) {
   if (!FORMATS[format]) throw new Error(`Unknown format: ${format}`);
   // pts = points in the current game, the tiebreak, or the match tiebreak.
-  return { format, games: [0, 0], pts: [0, 0], tiebreak: format === 'mtb', tbFinal: null, winner: null, played: 0 };
+  return { format, games: [0, 0], pts: [0, 0], tiebreak: format === 'mtb', tiebreakAt: null, tbFinal: null, winner: null, played: 0 };
 }
 
 export function applyPoint(state, side) {
@@ -58,7 +58,10 @@ export function applyPoint(state, side) {
     s.games[i] += 1;
     s.pts = [0, 0];
     if (s.games[i] >= 6 && s.games[i] - s.games[j] >= 2) s.winner = side;
-    else if (s.games[0] === 6 && s.games[1] === 6) s.tiebreak = true;
+    else if ((s.games[0] === 5 && s.games[1] === 5) || (s.games[0] === 6 && s.games[1] === 6)) {
+      s.tiebreak = true;
+      s.tiebreakAt = Math.max(s.games[0], s.games[1]);
+    }
   }
   return s;
 }
@@ -124,13 +127,16 @@ export function validateResult(format, input) {
   }
 
   const tbGiven = Array.isArray(input?.tb) && input.tb.some((v) => v !== null && v !== '' && v !== undefined);
-  const setOk = (w === 6 && l <= 4) || (w === 7 && (l === 5 || l === 6));
-  if (!setOk) return { ok: false, error: 'A standard set ends 6–0 to 6–4, 7–5, or 7–6 (tiebreak).' };
-  if (!(w === 7 && l === 6)) {
-    if (tbGiven) return { ok: false, error: 'Tiebreak points only apply to a 7–6 set.' };
+  const setOk = (w === 6 && l <= 4) || (w === 6 && l === 5) || (w === 7 && (l === 5 || l === 6));
+  if (!setOk) return { ok: false, error: 'A standard set ends 6–0 to 6–4, 6–5 (5–5 tiebreak), 7–5, or 7–6 (tiebreak).' };
+  if (!((w === 6 && l === 5) || (w === 7 && l === 6))) {
+    if (tbGiven) return { ok: false, error: 'Tiebreak points only apply to a 6–5 or 7–6 set.' };
     return { ok: true, winner, score: { a, b, tb: null } };
   }
-  if (!tbGiven) return { ok: true, winner, score: { a, b, tb: null } };
+  if (!tbGiven) {
+    if (w === 7 && l === 6) return { ok: true, winner, score: { a, b, tb: null } };
+    return { ok: false, error: 'A 6–5 set must include its tiebreak points.' };
+  }
   const ta = Number(input.tb[0]);
   const tb = Number(input.tb[1]);
   if (!isWhole(ta) || !isWhole(tb)) return { ok: false, error: 'Tiebreak points must be whole numbers.' };
