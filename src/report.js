@@ -129,7 +129,7 @@ function pageHeading(doc, title, sub) {
 function drawMatch(doc, view, match, index, y) {
   const names = (ids) => ids.map((id) => view.people[id] ?? 'Unknown player').join(' & ');
   const tone = match.status === 'completed' ? C.pale : '#F7F7F5';
-  doc.roundedRect(M, y, INNER, 66, 11).fill(tone);
+  doc.roundedRect(M, y, INNER, match.incompleteReason ? 96 : 66, 11).fill(tone);
   smallLabel(doc, `MATCH ${String(index + 1).padStart(2, '0')}  /  COURT ${match.court}  /  ${match.kind}`, M + 13, y + 9);
   const status = { completed: 'FINAL', live: 'LIVE', scheduled: 'SCHEDULED', incomplete: 'STOPPED' }[match.status] ?? match.status.toUpperCase();
   const when = match.completedAt ? ` / ${stampTime(match.completedAt)}` : match.startedAt ? ` / STARTED ${stampTime(match.startedAt)}` : '';
@@ -137,6 +137,7 @@ function drawMatch(doc, view, match, index, y) {
   doc.font(match.winner === 'A' ? 'Bold' : 'Regular').fontSize(9).fillColor(C.ink).text(ellipsis(doc, names(match.teamA), 196, 9), M + 13, y + 36, { width: 196, lineBreak: false });
   doc.font('Bold').fontSize(10).fillColor(C.ink).text(scoreLabel(match, view.day.format), M + 209, y + 34, { width: 105, align: 'center', lineBreak: false });
   doc.font(match.winner === 'B' ? 'Bold' : 'Regular').fontSize(9).fillColor(C.ink).text(ellipsis(doc, names(match.teamB), 196, 9), M + 314, y + 36, { width: 196, align: 'right', lineBreak: false });
+  if (match.incompleteReason) doc.font('Regular').fontSize(8).fillColor(C.gray).text(`Reason: ${match.incompleteReason}`, M + 13, y + 58, { width: INNER - 26 });
 }
 
 function drawMatches(doc, view) {
@@ -151,9 +152,9 @@ function drawMatches(doc, view) {
   }
   let y = 138;
   for (const [index, match] of matches.entries()) {
-    if (y + 66 > H - 65) { doc.addPage(); pageHeading(doc, 'Match by match', 'Continued'); y = 138; }
+    if (y + (match.incompleteReason ? 96 : 66) > H - 65) { doc.addPage(); pageHeading(doc, 'Match by match', 'Continued'); y = 138; }
     drawMatch(doc, view, match, index, y);
-    y += 74;
+    y += match.incompleteReason ? 104 : 74;
   }
   if (y + 48 < 775) {
     doc.font('Regular').fontSize(8).fillColor(C.gray).text('Only final scores count toward the standings and daily awards.', M, y + 12, { width: INNER });

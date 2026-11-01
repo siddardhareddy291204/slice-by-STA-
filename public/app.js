@@ -504,6 +504,7 @@ function historyMatch(m, view) {
   return h`<li class="history-match">
     <div class="history-match-top"><span>Court ${m.court} · ${m.kind === 'doubles' ? 'Doubles' : 'Singles'}</span><span class="pill ${m.status === 'completed' ? 'done' : m.status === 'live' ? 'live' : ''}">${status}</span></div>
     <div class="history-teams"><span class="${m.winner === 'A' ? 'history-winner' : ''}">${players(m.teamA)}</span><span class="history-score">${score ? formatScore(score) : '—'}</span><span class="${m.winner === 'B' ? 'history-winner' : ''}">${players(m.teamB)}</span></div>
+    ${m.incompleteReason ? h`<p class="incomplete-reason">Reason: ${m.incompleteReason}</p>` : ''}
   </li>`;
 }
 
@@ -896,6 +897,7 @@ function matchCard(m, organizer) {
       <span class="team ${cls('A')}">${team(m.teamA)}</span><span class="tscore">${sa}</span>
       <span class="team ${cls('B')}">${team(m.teamB)}</span><span class="tscore">${sb}</span>
     </div>
+    ${m.status === 'incomplete' && m.incompleteReason ? h`<p class="incomplete-reason">Reason: ${m.incompleteReason}</p>` : ''}
     ${actions ? h`<div class="match-actions">${actions}</div>` : ''}
   </article>`;
 }
@@ -1394,6 +1396,7 @@ function renderMatch() {
       ${row('A', 0, m.teamA)}${row('B', 1, m.teamB)}
     </div>
     <div class="state-line">${state}</div>
+    ${m.status === 'incomplete' && m.incompleteReason ? h`<p class="incomplete-reason">Reason: ${m.incompleteReason}</p>` : ''}
     ${over ? '' : tip('score', 'Tap a side to give them the point', 'Undo fixes a slip. Stop match ends only this court; Stop Tennis ends the whole Tennis day.', true)}
     ${main}
     <div class="tools">${tools}</div>
@@ -1451,7 +1454,7 @@ ACT.undo = () => {
 
 ACT.incomplete = () => {
   const m = current();
-  S.modal = { type: 'incomplete', id: m.id, note: '' };
+  S.modal = { type: 'incomplete', id: m.id, note: '', reason: '' };
   paintModal();
 };
 ACT.reopenHere = async () => {
@@ -1464,14 +1467,32 @@ function incompleteSheet() {
   const m = S.view.matches.find((x) => x.id === S.modal.id);
   return h`${sheetHead('Stop this match?')}
     <div class="decision-hero match-decision"><span class="decision-icon">${I.stop}</span><div><strong>This court only</strong><p>The match becomes incomplete and will not count in standings.</p></div></div>
-    <label class="field"><span>Reason (optional)</span><input type="text" maxlength="200" value="${S.modal.note}" data-bind="incompleteNote" placeholder="Rain, injury, time…"></label>
+    <div class="field"><span>Why is the match incomplete? (optional)</span><div class="reason-options">${['Rain', 'Injury', 'Out of time', 'Other'].map((reason) => h`<button type="button" class="chip reason-chip" aria-pressed="${S.modal.reason === reason}" data-act="incompleteReason" data-reason="${reason}">${reason}</button>`)}</div></div>
+    ${S.modal.reason === 'Other' ? h`<label class="field"><span>Add a reason</span><input type="text" maxlength="200" value="${S.modal.note}" data-bind="incompleteNote" placeholder="Add details"></label>` : ''}
     <p class="note">The rest of Tennis keeps running. Use Stop Tennis above if the whole day is finished.</p>
     <button class="btn btn-danger btn-block" data-act="confirmIncomplete">${I.stop} Stop match</button>
     <button class="btn btn-text btn-block" data-act="closeModal">Keep playing</button>`;
 }
 
+function whatsNewSheet() {
+  return h`${sheetHead('What’s new in Slice')}
+    <div class="update-card">
+      <span class="update-icon">${I.pencil}</span>
+      <div><span class="eyebrow">MATCH UPDATES</span><h2>Explain an incomplete match</h2></div>
+    </div>
+    <p class="muted">If a match stops early, add a reason such as rain, injury, or time. You can also write your own. Players can see the reason on the match and in the session history.</p>
+    <div class="update-example"><span class="pill warn">Stopped</span><span>Reason: Rain</span></div>
+    <button class="btn btn-lime btn-block" data-act="closeModal" aria-label="Close what’s new">Got it</button>`;
+}
+
 BIND.incompleteNote = (_, el) => {
   S.modal.note = el.value;
+};
+
+ACT.incompleteReason = ({ reason }) => {
+  S.modal.reason = reason;
+  S.modal.note = reason === 'Other' ? '' : reason;
+  paintModal();
 };
 
 ACT.confirmIncomplete = async () => {
@@ -1494,8 +1515,8 @@ function paintModal() {
   const fresh = !$modal.firstChild;
   if (fresh) modalReturnFocus = document.activeElement;
   document.body.style.overflow = 'hidden';
-  const body = { result: resultSheet, lineup: lineupSheet, finishDay: finishDaySheet, deleteDay: deleteDaySheet, incomplete: incompleteSheet }[S.modal.type]();
-  const labels = { result: 'Match result', lineup: 'Match lineup', finishDay: 'Stop Tennis', deleteDay: 'Delete Tennis', incomplete: 'Stop match' };
+  const body = { result: resultSheet, lineup: lineupSheet, finishDay: finishDaySheet, deleteDay: deleteDaySheet, incomplete: incompleteSheet, whatsNew: whatsNewSheet }[S.modal.type]();
+  const labels = { result: 'Match result', lineup: 'Match lineup', finishDay: 'Stop Tennis', deleteDay: 'Delete Tennis', incomplete: 'Stop match', whatsNew: 'What’s new in Slice' };
   $modal.innerHTML = part(h`<div class="overlay" data-act="overlay" style="${fresh ? '' : 'animation:none'}"><div class="sheet stack" role="dialog" aria-modal="true" aria-label="${labels[S.modal.type]}" style="${fresh ? '' : 'animation:none'}"><div class="grabber"></div>${body}</div></div>`);
   if (fresh) requestAnimationFrame(() => $modal.querySelector('.sheet [aria-label="Close"]')?.focus());
 }
@@ -1514,6 +1535,12 @@ ACT.closeModal = () => {
     modalReturnFocus = null;
   }, 200);
 };
+
+function showWhatsNew() {
+  if (S.modal) return;
+  S.modal = { type: 'whatsNew' };
+  paintModal();
+}
 
 ACT.resultModal = ({ id }) => {
   const m = S.view.matches.find((x) => x.id === +id);
@@ -1701,10 +1728,11 @@ ACT.introStep = ({ d }) => {
   if (+d > 0 && introIndex === SLIDES.length - 1) return ACT.introDone();
   setIntro(introIndex + Number(d));
 };
-ACT.introDone = () => {
+ACT.introDone = async () => {
   markSeen('intro');
   introIndex = 0;
-  route();
+  await route();
+  showWhatsNew();
 };
 
 // Swipe: the track follows the finger 1:1, resists at the ends, and on release
@@ -1959,4 +1987,6 @@ function renderPublic() {
   </div>`);
 }
 
-route();
+route().then(() => {
+  if (location.pathname.startsWith('/v/') || seen('intro')) setTimeout(showWhatsNew, 250);
+});

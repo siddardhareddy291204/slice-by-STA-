@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS matches (
   score        TEXT,
   winner       TEXT,
   source       TEXT,
+  incomplete_reason TEXT,
   created_at   TEXT NOT NULL,
   updated_at   TEXT NOT NULL,
   started_at   TEXT,
@@ -84,6 +85,7 @@ const MIGRATIONS = [
   ['days', 'start_time', 'ALTER TABLE days ADD COLUMN start_time TEXT'],
   ['days', 'end_time', 'ALTER TABLE days ADD COLUMN end_time TEXT'],
   ['days', 'finished_at', 'ALTER TABLE days ADD COLUMN finished_at TEXT'],
+  ['matches', 'incomplete_reason', 'ALTER TABLE matches ADD COLUMN incomplete_reason TEXT'],
 ];
 
 async function migrate(db) {

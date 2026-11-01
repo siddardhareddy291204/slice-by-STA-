@@ -30,6 +30,7 @@ function toMatch(r) {
     score: r.score ? JSON.parse(r.score) : null,
     winner: r.winner ?? null,
     source: r.source ?? null,
+    incompleteReason: r.incomplete_reason ?? null,
     startedAt: r.started_at ?? null,
     completedAt: r.completed_at ?? null,
     updatedAt: r.updated_at,
@@ -627,10 +628,11 @@ export class Store {
       if (m.status === 'incomplete') return m;
       const { format } = await s.dayRow(m.dayId);
       const partial = m.points && m.source !== 'manual' ? scoreFromState(replay(format, m.points)) : m.score;
-      const updated = await s.save(id, { status: 'incomplete', score: partial, winner: null });
+      const reasonText = String(note ?? '').trim().slice(0, 200) || null;
+      const updated = await s.save(id, { status: 'incomplete', score: partial, winner: null, incomplete_reason: reasonText });
       const names = await s.playerNames();
       const was = m.status === 'completed' ? ` (was ${s.resultText(m, names)})` : partial ? ` at ${formatScore(partial)}` : '';
-      await s.log(updated, names, 'incomplete', `Stopped${was}, not counted`, { before: s.snapshot(m), after: s.snapshot(updated), note });
+      await s.log(updated, names, 'incomplete', `Stopped${was}, not counted`, { before: s.snapshot(m), after: s.snapshot(updated), note: reasonText });
       return updated;
     });
   }
@@ -640,7 +642,7 @@ export class Store {
       const m = await s.matchRow(id);
       s.assertOpen(await s.dayRow(m.dayId));
       if (m.status !== 'incomplete') throw new HttpError(409, 'Only a stopped match can be resumed.');
-      const fields = m.source === 'manual' ? { status: 'live', score: null, source: null, points: '' } : { status: 'live', score: null };
+      const fields = m.source === 'manual' ? { status: 'live', score: null, source: null, points: '', incomplete_reason: null } : { status: 'live', score: null, incomplete_reason: null };
       const updated = await s.save(id, fields);
       await s.log(updated, await s.playerNames(), 'reopened', 'Resumed after being stopped', { before: s.snapshot(m), after: s.snapshot(updated) });
       return updated;

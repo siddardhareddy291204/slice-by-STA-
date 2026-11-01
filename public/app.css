@@ -373,6 +373,15 @@ input.glass-input::placeholder { color: rgba(255, 255, 255, 0.6); }
 .tscore small { font-size: 0.85rem; color: var(--muted); margin-left: 4px; font-weight: 650; }
 .match-actions { display: flex; gap: 8px; margin-top: 14px; }
 .match-actions .btn:first-child { flex: 1; }
+.incomplete-reason { margin: 12px 0 0; color: var(--muted); font-size: .8rem; line-height: 1.4; }
+.reason-options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.reason-chip[aria-pressed="true"] { background: var(--forest); color: #fff; }
+.scoring .incomplete-reason { color: rgba(255,255,255,.8); text-align: center; margin: 12px 24px; }
+.update-card { display: flex; align-items: center; gap: 12px; padding: 16px; border-radius: var(--r-lg); background: var(--ok-soft); }
+.update-card h2 { margin-top: 3px; font-size: 1.2rem; }
+.update-icon { width: 42px; height: 42px; flex: none; display: grid; place-items: center; border-radius: 50%; background: var(--lime); color: var(--forest); }
+.update-icon svg { width: 20px; height: 20px; }
+.update-example { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); color: var(--ink-2); font-size: .88rem; font-weight: 600; }
 
 /* ---------- Scoring ---------- */
 .scoring { min-height: 100dvh; display: flex; flex-direction: column; color: #fff; --img: url(/img/scoring-bg.jpg?v=2); }
