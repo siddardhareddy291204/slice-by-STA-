@@ -854,6 +854,12 @@ function liveState(m) {
 }
 
 function scoreCells(m) {
+  if (m.status === 'incomplete' && m.points && m.source !== 'manual') {
+    const st = replay(S.view.day.format, m.points);
+    const p = pointDisplay(st);
+    if (st.format === 'mtb') return [p.a, p.b];
+    return [h`${st.games[0]}<small>${p.a}</small>`, h`${st.games[1]}<small>${p.b}</small>`];
+  }
   if (m.status === 'completed' || (m.status === 'incomplete' && m.score)) {
     const s = m.score;
     const tb = (i) => (s.tb ? h`<small>${s.tb[i]}</small>` : '');
@@ -1226,8 +1232,9 @@ function finishDaySheet() {
   return h`${sheetHead('Stop Tennis?')}
     <div class="decision-hero stop-decision"><span class="decision-icon">${I.stop}</span><div><strong>Stop this Tennis day</strong><p>Live play will stop now. Completed results stay saved.</p></div></div>
     <ul class="decision-list"><li><span>${I.stop}</span><b>${live}</b><span>live match${live === 1 ? '' : 'es'} marked incomplete and excluded</span></li><li><span>${I.court}</span><b>${waiting}</b><span>waiting match${waiting === 1 ? '' : 'es'} left without a result</span></li><li><span>${I.check}</span><b>0</b><span>completed results changed</span></li></ul>
+    ${live ? h`<div class="field"><span>Reason for stopping live matches (required)</span><div class="reason-options">${['Rain', 'Injury', 'Out of time', 'Other'].map((reason) => h`<button type="button" class="chip reason-chip" aria-pressed="${S.modal.reason === reason}" data-act="incompleteReason" data-reason="${reason}">${reason}</button>`)}</div></div>${S.modal.reason === 'Other' ? h`<label class="field"><span>Add a reason</span><input type="text" maxlength="200" value="${S.modal.note}" data-bind="finishDayReason" placeholder="Add details"></label>` : ''}` : ''}
     <p class="note">You can reopen Tennis later from Setup. Stop only the current match if you want the rest of the day to continue.</p>
-    <button class="btn btn-lime btn-block" data-act="confirmFinishDay">${I.stop} Stop Tennis</button>
+    <button class="btn btn-lime btn-block" data-act="confirmFinishDay" ${live && !hasIncompleteReason() ? 'disabled' : ''}>${I.stop} Stop Tennis</button>
     <button class="btn btn-text btn-block" data-act="closeModal">Keep playing</button>`;
 }
 
@@ -1246,7 +1253,9 @@ function deleteDaySheet() {
 ACT.confirmFinishDay = async () => {
   const { day, matches } = S.view;
   const live = matches.filter((m) => m.status === 'live').length;
-  await api(`/api/days/${day.id}/finish`, { method: 'POST', body: { stopLive: live > 0 } });
+  if (live && !hasIncompleteReason()) return;
+  const reason = S.modal.reason === 'Other' ? S.modal.note.trim() : S.modal.reason;
+  await api(`/api/days/${day.id}/finish`, { method: 'POST', body: { stopLive: live > 0, reason } });
   S.modal = null;
   paintModal();
   CACHE.delete(`day:${day.id}`);
@@ -1273,7 +1282,7 @@ ACT.confirmDeleteDay = async () => {
 };
 
 ACT.finishDay = () => {
-  S.modal = { type: 'finishDay' };
+  S.modal = { type: 'finishDay', reason: '', note: '' };
   paintModal();
 };
 
@@ -1354,7 +1363,10 @@ function renderMatch() {
   const games = (i) => (st ? st.games[i] : m.score ? [m.score.a, m.score.b][i] : 0);
 
   const row = (side, i, ids) => {
-    const point = over ? (isSet ? (m.winner === side ? '✓' : '') : m.score ? [m.score.a, m.score.b][i] : '') : p ? [p.a, p.b][i] : '';
+    const savedPartial = m.status === 'incomplete' && !!m.points && !manual;
+    const point = m.status === 'completed'
+      ? (isSet ? (m.winner === side ? '✓' : '') : m.score ? [m.score.a, m.score.b][i] : '')
+      : p && (!over || savedPartial) ? [p.a, p.b][i] : '';
     return h`<div class="sb-row ${isSet ? '' : 'mtb'} ${m.winner === side ? 'winner' : ''}">
       <div class="sb-name">${team(ids)}${sit[side] ? h`<span class="sb-tag"><span class="pill live">${sit[side] === 'match' ? 'Match point' : 'Game point'}</span></span>` : ''}</div>
       ${isSet ? h`<div class="sb-games">${games(i)}${st?.tbFinal ? h`<small>TB ${st.tbFinal[i]}</small>` : ''}</div>` : ''}
@@ -1466,27 +1478,42 @@ ACT.reopenHere = async () => {
 function incompleteSheet() {
   const m = S.view.matches.find((x) => x.id === S.modal.id);
   return h`${sheetHead('Stop this match?')}
-    <div class="decision-hero match-decision"><span class="decision-icon">${I.stop}</span><div><strong>This court only</strong><p>The match becomes incomplete and will not count in standings.</p></div></div>
-    <div class="field"><span>Why is the match incomplete? (optional)</span><div class="reason-options">${['Rain', 'Injury', 'Out of time', 'Other'].map((reason) => h`<button type="button" class="chip reason-chip" aria-pressed="${S.modal.reason === reason}" data-act="incompleteReason" data-reason="${reason}">${reason}</button>`)}</div></div>
+    <div class="decision-hero match-decision"><span class="decision-icon">${I.stop}</span><div><strong>This court only</strong><p>The current partial score will be saved without a winner. It won’t count in standings.</p></div></div>
+    <div class="field"><span>Reason for stopping (required)</span><div class="reason-options">${['Rain', 'Injury', 'Out of time', 'Other'].map((reason) => h`<button type="button" class="chip reason-chip" aria-pressed="${S.modal.reason === reason}" data-act="incompleteReason" data-reason="${reason}">${reason}</button>`)}</div></div>
     ${S.modal.reason === 'Other' ? h`<label class="field"><span>Add a reason</span><input type="text" maxlength="200" value="${S.modal.note}" data-bind="incompleteNote" placeholder="Add details"></label>` : ''}
     <p class="note">The rest of Tennis keeps running. Use Stop Tennis above if the whole day is finished.</p>
-    <button class="btn btn-danger btn-block" data-act="confirmIncomplete">${I.stop} Stop match</button>
+    <button class="btn btn-danger btn-block" data-act="confirmIncomplete" ${hasIncompleteReason() ? '' : 'disabled'}>${I.stop} Stop match</button>
     <button class="btn btn-text btn-block" data-act="closeModal">Keep playing</button>`;
+}
+
+function hasIncompleteReason() {
+  return !!S.modal?.reason && (S.modal.reason !== 'Other' || !!S.modal.note?.trim());
+}
+
+function syncIncompleteButtons() {
+  const disabled = !hasIncompleteReason();
+  for (const button of document.querySelectorAll('[data-act="confirmIncomplete"], [data-act="confirmFinishDay"]')) button.disabled = disabled;
 }
 
 function whatsNewSheet() {
   return h`${sheetHead('What’s new in Slice')}
     <div class="update-card">
       <span class="update-icon">${I.pencil}</span>
-      <div><span class="eyebrow">MATCH UPDATES</span><h2>Explain an incomplete match</h2></div>
+      <div><span class="eyebrow">MATCH UPDATES</span><h2>Save a match before it’s finished</h2></div>
     </div>
-    <p class="muted">If a match stops early, add a reason such as rain, injury, or time. You can also write your own. Players can see the reason on the match and in the session history.</p>
-    <div class="update-example"><span class="pill warn">Stopped</span><span>Reason: Rain</span></div>
+    <p class="muted">The host can stop play at any point and save the current partial score without declaring a winner. A reason is required—choose rain, injury, time, or enter your own. Players can see it in the match and session history.</p>
+    <div class="update-example"><span class="pill warn">Stopped · 3–2</span><span>Reason: Rain</span></div>
     <button class="btn btn-lime btn-block" data-act="closeModal" aria-label="Close what’s new">Got it</button>`;
 }
 
 BIND.incompleteNote = (_, el) => {
   S.modal.note = el.value;
+  syncIncompleteButtons();
+};
+
+BIND.finishDayReason = (_, el) => {
+  S.modal.note = el.value;
+  syncIncompleteButtons();
 };
 
 ACT.incompleteReason = ({ reason }) => {
@@ -1496,6 +1523,7 @@ ACT.incompleteReason = ({ reason }) => {
 };
 
 ACT.confirmIncomplete = async () => {
+  if (!hasIncompleteReason()) return;
   const md = S.modal;
   await queue;
   applyServer(await api(`/api/matches/${md.id}/incomplete`, { method: 'POST', body: { note: md.note } }));

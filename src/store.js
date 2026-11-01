@@ -275,13 +275,14 @@ export class Store {
     });
   }
 
-  finishDay(id, { stopLive = false } = {}) {
+  finishDay(id, { stopLive = false, reason } = {}) {
     return this.tx(async (s) => {
       const day = await s.dayRow(id);
       if (day.finishedAt) return day;
       const live = (await s.matchesFor(id)).filter((m) => m.status === 'live');
       if (live.length && stopLive !== true) throw new HttpError(409, 'There are live matches. End them as incomplete to finish this session.');
-      for (const match of live) await s.markIncomplete(match.id, 'Session ended before this match finished');
+      if (live.length && !String(reason ?? '').trim()) throw new HttpError(400, 'Add a reason before stopping live matches.');
+      for (const match of live) await s.markIncomplete(match.id, reason);
       const at = now();
       await s.run('UPDATE days SET finished_at = ? WHERE id = ?', at, id);
       await s.run('INSERT INTO activity (day_id, action, summary, by_name, at) VALUES (?, ?, ?, ?, ?)', id, 'session_finished', 'Session ended', day.scorer, at);
@@ -603,7 +604,7 @@ export class Store {
       const { format } = day;
       const check = validateResult(format, input);
       if (!check.ok) throw new HttpError(400, check.error);
-      const fields = { status: 'completed', score: check.score, winner: check.winner, source: 'manual', completedAt: m.completedAt ?? now() };
+      const fields = { status: 'completed', score: check.score, winner: check.winner, source: 'manual', completedAt: m.completedAt ?? now(), incomplete_reason: null };
       if (!m.startedAt) fields.startedAt = now();
       const updated = await s.save(id, fields);
       const names = await s.playerNames();
@@ -626,9 +627,11 @@ export class Store {
       const m = await s.matchRow(id);
       s.assertOpen(await s.dayRow(m.dayId));
       if (m.status === 'incomplete') return m;
+      const reasonText = String(note ?? '').trim();
+      if (!reasonText) throw new HttpError(400, 'Add a reason before saving an incomplete match.');
+      if (reasonText.length > 200) throw new HttpError(400, 'Keep the reason under 200 characters.');
       const { format } = await s.dayRow(m.dayId);
       const partial = m.points && m.source !== 'manual' ? scoreFromState(replay(format, m.points)) : m.score;
-      const reasonText = String(note ?? '').trim().slice(0, 200) || null;
       const updated = await s.save(id, { status: 'incomplete', score: partial, winner: null, incomplete_reason: reasonText });
       const names = await s.playerNames();
       const was = m.status === 'completed' ? ` (was ${s.resultText(m, names)})` : partial ? ` at ${formatScore(partial)}` : '';
