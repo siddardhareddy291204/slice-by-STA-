@@ -115,6 +115,7 @@ export async function createApp({ dbFile, rootDir }) {
 
   on('GET', '/api/days', 'organizer', ({ url }) => store.listDays({ month: url.searchParams.get('month') ?? undefined }));
   on('GET', '/api/monthly', 'organizer', ({ url }) => store.monthlyView(url.searchParams.get('month') ?? ''));
+  on('GET', '/api/statistics', 'organizer', ({ url }) => store.statisticsView(url.searchParams.get('start') ?? '', url.searchParams.get('end') ?? ''));
   on('POST', '/api/days', 'organizer', ({ body }) => store.createDay(body));
   on('GET', '/api/days/(\\d+)', 'organizer', async ({ params }) => store.dayView(id(params[0]), { organizer: true }));
   on('GET', '/api/days/(\\d+)/report.pdf', 'organizer', async ({ params }) => {

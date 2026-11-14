@@ -154,6 +154,22 @@ export function monthlyAward(standings, metric = 'games') {
   };
 }
 
+// Period statistics have no award eligibility threshold. Equal match records
+// share a rank; players with no completed results are shown without a rank.
+export function computePeriodStandings(players, sessions) {
+  const compare = (a, b) => b.matchWins - a.matchWins || a.matchLosses - b.matchLosses;
+  const rows = computeMonthlyStandings(players, sessions).map(({ eligible, ...r }) => ({
+    ...r, winPct: r.matchesPlayed ? r.matchWins / r.matchesPlayed : 0,
+  }));
+  rows.sort((a, b) => Number(b.matchesPlayed > 0) - Number(a.matchesPlayed > 0) || compare(a, b) || a.name.localeCompare(b.name));
+  let previous;
+  rows.forEach((r, i) => {
+    r.rank = r.matchesPlayed ? (previous && compare(previous, r) === 0 ? previous.rank : i + 1) : null;
+    previous = r;
+  });
+  return rows;
+}
+
 export function monthlyAwards(standings) {
   return { games: monthlyAward(standings, 'games'), matches: monthlyAward(standings, 'matches') };
 }

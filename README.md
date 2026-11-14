@@ -1,5 +1,7 @@
 # Slice by STA
 
+Player Statistics is available from Home, the Statistics tab, and monthly recognition. Choose a month or an inclusive custom date range to see every player's matches played/won/lost, win percentage, games won/lost and participation days. Rankings use most match wins, then fewest losses; equal records share a rank. Players with no completed results remain visible and unranked. There is no minimum participation threshold. Only completed matches count; match tiebreak points are excluded from game totals.
+
 The courtside home for a day of tennis. Whoever is running the courts marks who showed up, gets fair singles/doubles suggestions, scores matches point by point (or enters a final score), and Slice by STA keeps every player’s record, the session leaderboard and **Player of the Day** up to date. Players follow along on a read-only link.
 
 ## Run it

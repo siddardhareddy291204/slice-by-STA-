@@ -106,6 +106,26 @@ test('organizer flow end to end, and the player link is read-only', async (t) =>
   assert.equal(monthly.data.month, '2026-10');
   assert.equal(monthly.data.awards.games.status, 'pending');
 
+  // Period dates include both endpoints and all players; tiebreak points aren't games.
+  const period = await call('GET', '/api/statistics?start=2026-09-30&end=2026-10-17');
+  assert.equal(period.status, 200);
+  assert.equal(period.data.sessionCount, 3);
+  assert.equal(period.data.completedMatches, 2);
+  assert.equal(period.data.standings.length, 5);
+  const asha = period.data.standings.find((r) => r.playerId === ids[0]);
+  assert.deepEqual([asha.matchesPlayed, asha.matchWins, asha.matchLosses, asha.gamesWon, asha.gamesLost], [2, 1, 1, 4, 6]);
+  assert.equal(period.data.standings.find((r) => r.playerId === late.id).rank, null);
+  const singleDate = (await call('GET', '/api/statistics?start=2026-09-30&end=2026-09-30')).data;
+  assert.equal(singleDate.completedMatches, 1);
+  assert.ok(singleDate.standings.every((r) => r.gamesWon === 0));
+  const emptyPeriod = (await call('GET', '/api/statistics?start=2026-11-01&end=2026-11-30')).data;
+  assert.equal(emptyPeriod.completedMatches, 0);
+  assert.ok(emptyPeriod.standings.every((r) => r.rank === null));
+  assert.equal((await call('GET', '/api/statistics?start=2026-02-30&end=2026-10-17')).status, 400);
+  assert.equal((await call('GET', '/api/statistics?start=2026-10-17&end=2026-09-30')).status, 400);
+  assert.equal((await call('GET', '/api/statistics')).status, 400);
+  assert.equal((await call('GET', '/api/statistics?start=2026-09-30&end=2026-10-17', null, { auth: false })).status, 401);
+
   // Session schedule, finish state and both awards survive a fresh API read.
   assert.equal((await call('PATCH', `/api/days/${day.id}`, { date: '2026-10-18', startTime: '08:30', endTime: '11:30' })).status, 200);
   assert.equal((await call('PATCH', `/api/days/${day.id}`, { startTime: '12:00', endTime: '11:30' })).status, 400);
@@ -127,7 +147,8 @@ test('organizer flow end to end, and the player link is read-only', async (t) =>
   await call('POST', `/api/matches/${running.id}/start`);
   assert.equal((await call('POST', `/api/days/${sameDate.id}/finish`)).status, 409);
   assert.equal((await call('POST', `/api/days/${sameDate.id}/finish`, null, { auth: false })).status, 401);
-  assert.equal((await call('POST', `/api/days/${sameDate.id}/finish`, { stopLive: true })).status, 200);
+  assert.equal((await call('POST', `/api/days/${sameDate.id}/finish`, { stopLive: true })).status, 400);
+  assert.equal((await call('POST', `/api/days/${sameDate.id}/finish`, { stopLive: true, reason: 'Rain stopped play' })).status, 200);
   const ended = (await call('GET', `/api/days/${sameDate.id}`)).data;
   assert.ok(ended.day.finishedAt);
   assert.equal(ended.matches.find((x) => x.id === running.id).status, 'incomplete');

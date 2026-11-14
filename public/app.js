@@ -24,6 +24,7 @@ const S = {
   modal: null,
   editingPlayer: null,
   history: null,
+  statistics: null,
   route: null,
 };
 
@@ -39,7 +40,7 @@ async function api(path, { method = 'GET', body } = {}) {
   if (res.ok && method !== 'GET') {
     CACHE.delete('home');
     CACHE.delete('players');
-    for (const key of CACHE.keys()) if (key.startsWith('history:')) CACHE.delete(key);
+    for (const key of CACHE.keys()) if (key.startsWith('history:') || key.startsWith('statistics:')) CACHE.delete(key);
   }
   if (!res.ok) {
     const err = new Error(data.error || `Request failed (${res.status})`);
@@ -142,6 +143,7 @@ const I = {
   plus: svg('<path d="M12 5v14M5 12h14"/>'),
   cal: svg('<rect x="3.5" y="5" width="17" height="15" rx="3"/><path d="M8 3v4M16 3v4M3.5 10h17"/>'),
   trophy: svg('<path d="M8 4h8v5a4 4 0 0 1-8 0V4z"/><path d="M8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4"/><path d="M12 13v4M8.5 20h7"/>'),
+  chart: svg('<path d="M4 3v17h17M8 16v-4M13 16V8M18 16V4"/>'),
   court: svg('<rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M4 12h16M8 3v18M16 3v18M8 7.5h8M8 16.5h8"/>'),
   log: svg('<path d="M12 8v4l2.5 2.5"/><circle cx="12" cy="12" r="8.5"/>'),
   sliders: svg('<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>'),
@@ -175,7 +177,7 @@ function topbar({ back, title, right = '' }) {
 function tabbar(items, active) {
   return h`<nav class="tabbar" aria-label="Sections">${items.map(([key, href, icon, label]) => h`<a href="${href}" ${key === active ? raw('aria-current="page"') : ''} aria-label="${label}">${icon}<span>${label}</span></a>`)}</nav>`;
 }
-const homeTabs = (active) => tabbar([['home', '#/', I.home, 'Home'], ['new', '#/day/new', I.cal, 'New day'], ['players', '#/players', I.users, 'Players'], ['settings', '#/settings', I.gear, 'Settings']], active);
+const homeTabs = (active) => tabbar([['home', '#/', I.home, 'Home'], ['new', '#/day/new', I.cal, 'New day'], ['statistics', '#/statistics', I.chart, 'Statistics'], ['players', '#/players', I.users, 'Players'], ['settings', '#/settings', I.gear, 'Settings']], active);
 const dayTabs = (id, active) => tabbar([
   ['home', '#/', I.home, 'Home'],
   ['courts', `#/day/${id}`, I.court, 'Courts'],
@@ -271,6 +273,9 @@ async function route() {
     if (hash === '/' || hash === '/login') return await showHome();
     if (hash === '/players') return await showPlayers();
     if (hash === '/settings') return renderSettings();
+    if (hash === '/statistics') return await showStatistics(today().slice(0, 7));
+    if ((m = hash.match(/^\/statistics\/(\d{4}-\d{2})$/))) return await showStatistics(m[1]);
+    if ((m = hash.match(/^\/statistics\/(\d{4}-\d{2}-\d{2})\/(\d{4}-\d{2}-\d{2})$/))) return await showStatistics(null, m[1], m[2]);
     if (hash === '/history') return await showHistory(today());
     if ((m = hash.match(/^\/history\/(\d{4}-\d{2})$/))) return await showHistory(`${m[1]}-01`, true);
     if ((m = hash.match(/^\/history\/(\d{4}-\d{2}-\d{2})$/))) return await showHistory(m[1]);
@@ -446,6 +451,7 @@ function renderHome(days, players) {
 
     <div class="install-slot">${installTip()}</div>
     ${checklist(days, players)}
+    <a class="report-download" href="#/statistics">${I.chart}<span>All player statistics<small class="muted" style="display:block">Monthly records, custom periods & standings</small></span>${I.arrow}</a>
     <div class="section-head"><h2>Recent sessions</h2><a class="section-link" href="#/history/${today()}">View all dates</a></div>
     ${days.length ? h`<div class="stack">${days.slice(0, 4).map(sessionCard)}</div>` : empty('No sessions yet', 'Start one when players arrive.')}
   </div>
@@ -574,10 +580,55 @@ function monthlyPlayerCard(monthly, monthLabel) {
     const unit = metric === 'gamesWon' ? 'games won' : 'matches won';
     return h`<div class="monthly-award"><div class="row between"><span class="eyebrow">${label}</span><span class="pill ${award.status === 'awarded' ? 'done' : ''}">${award.status === 'awarded' ? `${value} ${unit}` : 'Pending'}</span></div><strong>${names || `Needs ${MIN_PARTICIPATION_DAYS} distinct tennis days`}</strong>${names ? h`<span class="meta">${award.winners[0].participationDays} days · ${award.winners.length > 1 ? 'Shared tie' : 'Leader'}</span>` : ''}</div>`;
   };
-  return h`<section class="card monthly-card"><div class="row between"><div><span class="eyebrow">${monthLabel.toUpperCase()}</span><h2>Player of the Month</h2></div><span class="count">${monthly.sessionCount} tennis day${monthly.sessionCount === 1 ? '' : 's'}</span></div><p class="note">Minimum ${MIN_PARTICIPATION_DAYS} distinct participation days. See both fair ways to crown the month.</p>${renderAward('Most games won', monthly.awards.games, 'gamesWon')}${renderAward('Most matches won', monthly.awards.matches, 'matchWins')}</section>`;
+  return h`<section class="card monthly-card"><div class="row between"><div><span class="eyebrow">${monthLabel.toUpperCase()}</span><h2>Player of the Month</h2></div><span class="count">${monthly.sessionCount} tennis day${monthly.sessionCount === 1 ? '' : 's'}</span></div><p class="note">Minimum ${MIN_PARTICIPATION_DAYS} distinct participation days. See both fair ways to crown the month.</p>${renderAward('Most games won', monthly.awards.games, 'gamesWon')}${renderAward('Most matches won', monthly.awards.matches, 'matchWins')}<a class="history-open" href="#/statistics/${monthly.month}">See all player statistics ${I.arrow}</a></section>`;
 }
 CHANGE.historyMonth = (_, el) => {
   if (/^\d{4}-(0[1-9]|1[0-2])$/.test(el.value)) go(`#/history/${el.value}`);
+};
+
+// ---------- All-player period statistics ----------
+async function showStatistics(month, start, end) {
+  if (month) {
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new Error('Choose a valid month.');
+    start = `${month}-01`;
+    const last = new Date(`${monthDate(month, 1)}T12:00:00`);
+    last.setDate(last.getDate() - 1);
+    end = iso(last);
+  }
+  await fresh(`statistics:${start}:${end}`, () => api(`/api/statistics?start=${start}&end=${end}`), (data) => {
+    S.statistics = { ...data, month };
+    renderStatistics();
+  });
+}
+
+function renderStatistics() {
+  const { month, start, end, standings, sessionCount, completedMatches } = S.statistics;
+  const label = month ? fmtDate(start, { month: 'long', year: 'numeric' }) : `${fmtDate(start, { day: 'numeric', month: 'short', year: 'numeric' })} – ${fmtDate(end, { day: 'numeric', month: 'short', year: 'numeric' })}`;
+  paint(h`${topbar({ back: '#/', title: 'Statistics' })}<div class="wrap statistics-page">
+    <header class="statistics-hero"><span class="eyebrow">EVERY PLAYER · EVERY RESULT</span><h1>Player statistics</h1><p>Compare match records and games across any period.</p></header>
+    <section class="card statistics-filters" aria-label="Statistics period">
+      <label class="field"><span>Choose a month</span><input type="month" value="${month || ''}" data-change="statisticsMonth"></label>
+      <form data-form="statisticsPeriod"><p class="small muted">Or choose a custom period</p><div class="statistics-dates">
+        <label class="field"><span>From</span><input type="date" name="start" value="${start}" required></label>
+        <label class="field"><span>To (inclusive)</span><input type="date" name="end" value="${end}" required></label>
+      </div><div class="error" data-error role="alert" hidden></div><button class="btn btn-dark btn-block" type="submit">Show statistics</button></form>
+    </section>
+    <section aria-labelledby="statistics-heading"><div class="section-head"><h2 id="statistics-heading">${label}</h2></div>
+      <p class="muted small">${sessionCount} session${sessionCount === 1 ? '' : 's'} · ${completedMatches} completed match${completedMatches === 1 ? '' : 'es'} · ${standings.length} players</p>
+      <p class="note statistics-rule" id="statistics-rule">Ranked by most matches won, then fewest lost. Equal records share a rank. No minimum participation required.</p>
+      ${!completedMatches ? h`<p class="card statistics-empty" role="status">No completed matches in this period. Choose another month or widen the dates to see results.</p>` : ''}
+      ${standings.length ? h`<p class="small muted statistics-scroll-hint">Swipe the table to see all columns →</p><div class="statistics-table-wrap" tabindex="0" role="region" aria-label="All player standings, scroll for more columns"><table class="statistics-table" aria-describedby="statistics-rule"><caption>All player standings · ${label}</caption><thead><tr><th scope="col">Rank</th><th scope="col">Player</th><th scope="col">Matches<br>played</th><th scope="col">Matches<br>won</th><th scope="col">Matches<br>lost</th><th scope="col">Win %</th><th scope="col">Games<br>won</th><th scope="col">Games<br>lost</th><th scope="col">Days<br>played</th></tr></thead><tbody>${standings.map((r) => h`<tr class="${r.rank === 1 ? 'statistics-leader' : ''}"><td>${r.rank ?? '—'}</td><th scope="row">${r.name}${!r.matchesPlayed ? h`<small>No completed matches</small>` : ''}</th><td>${r.matchesPlayed}</td><td class="statistics-wins">${r.matchWins}</td><td>${r.matchLosses}</td><td>${r.matchesPlayed ? `${Math.round(r.winPct * 100)}%` : '—'}</td><td>${r.gamesWon}</td><td>${r.gamesLost}</td><td>${r.participationDays}</td></tr>`)}</tbody></table></div>` : empty('No players yet', 'Add players to start tracking their records.')}
+      <p class="note statistics-rule">Dates use the Tennis session date, including both endpoints. Only completed matches count. Doubles results count for each partner. Games include set matches only; match tiebreak points are not games. Players without completed matches remain unranked.</p>
+    </section>
+  </div>${homeTabs('statistics')}`);
+}
+CHANGE.statisticsMonth = (_, el) => {
+  if (/^\d{4}-(0[1-9]|1[0-2])$/.test(el.value)) go(`#/statistics/${el.value}`);
+};
+FORM.statisticsPeriod = ({ start, end }) => {
+  if (!validHistoryDate(start) || !validHistoryDate(end)) throw new Error('Choose valid start and end dates.');
+  if (start > end) throw new Error('End date must be on or after start date.');
+  go(`#/statistics/${start}/${end}`);
 };
 
 // ---------- Players ----------

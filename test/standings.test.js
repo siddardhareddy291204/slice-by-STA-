@@ -1,12 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeStandings, playerOfTheDay, pairOfTheDay, sessionAwards, computeMonthlyStandings, monthlyAwards } from '../src/shared/standings.js';
+import { computeStandings, playerOfTheDay, pairOfTheDay, sessionAwards, computeMonthlyStandings, monthlyAwards, computePeriodStandings } from '../src/shared/standings.js';
 import { suggestRound } from '../src/shared/scheduler.js';
 
 const P = (...names) => names.map((name, i) => ({ id: i + 1, name }));
 let seq = 0;
 const done = (teamA, teamB, a, b) => ({ seq: ++seq, status: 'completed', teamA, teamB, score: { a, b, tb: null }, winner: a > b ? 'A' : 'B' });
 const row = (rows, id) => rows.find((r) => r.playerId === id);
+
+test('period standings rank match records, share ties and include every player without award thresholds', () => {
+  const sessions = [{ date: '2026-10-01', format: 'set', presentIds: [1, 2, 3, 4, 5], matches: [
+    done([1, 2], [3, 4], 6, 4), done([1], [3], 6, 0),
+    { ...done([4], [5], 6, 0), status: 'incomplete' },
+  ] }, { date: '2026-10-01', format: 'mtb', presentIds: [1, 2, 3], matches: [done([3], [1], 10, 8)] }];
+  const rows = computePeriodStandings(P('A', 'B', 'C', 'D', 'E', 'F'), sessions);
+  assert.deepEqual(rows.map((r) => [r.playerId, r.rank]), [[1, 1], [2, 2], [3, 3], [4, 4], [5, null], [6, null]]);
+  assert.equal(row(rows, 1).participationDays, 1);
+  assert.deepEqual([row(rows, 1).matchesPlayed, row(rows, 1).matchWins, row(rows, 1).matchLosses, row(rows, 1).gamesWon, row(rows, 1).gamesLost], [3, 2, 1, 12, 4]);
+  const ties = computePeriodStandings(P('A', 'B', 'C', 'D', 'E'), [sessions[0]]);
+  assert.deepEqual(ties.map((r) => [r.playerId, r.rank]), [[1, 1], [2, 2], [4, 3], [3, 4], [5, null]]);
+  const doubles = computePeriodStandings(P('A', 'B', 'C', 'D', 'E'), [{ ...sessions[0], matches: [sessions[0].matches[0]] }]);
+  assert.deepEqual(doubles.map((r) => r.rank), [1, 1, 3, 3, null]);
+  assert.deepEqual(computePeriodStandings(P('A', 'B'), []).map((r) => r.rank), [null, null]);
+});
 
 test('doubles results count for both partners, with score differential', () => {
   const rows = computeStandings(P('Asha', 'Vikram', 'Meera', 'Arjun'), [done([1, 2], [3, 4], 6, 3)]);

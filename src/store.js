@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { openDb } from './db.js';
 import { FORMATS, replay, scoreFromState, validateResult, formatScore } from './shared/scoring.js';
-import { computeStandings, playerOfTheDay, pairOfTheDay, sessionAwards, computeMonthlyStandings, monthlyAwards } from './shared/standings.js';
+import { computeStandings, playerOfTheDay, pairOfTheDay, sessionAwards, computeMonthlyStandings, monthlyAwards, computePeriodStandings } from './shared/standings.js';
 import { suggestRound } from './shared/scheduler.js';
 import { cleanName, nameKey } from './shared/names.js';
 
@@ -410,12 +410,31 @@ export class Store {
     const start = `${month}-01`;
     const next = new Date(`${start}T12:00:00Z`);
     next.setUTCMonth(next.getUTCMonth() + 1);
+    next.setUTCDate(next.getUTCDate() - 1);
     const end = next.toISOString().slice(0, 10);
+    const { players, sessions } = await this.periodData(start, end);
+    const standings = computeMonthlyStandings(players, sessions);
+    return { month, sessionCount: sessions.length, standings, awards: monthlyAwards(standings) };
+  }
+
+  async statisticsView(start, end) {
+    const valid = (date) => /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(Date.parse(`${date}T12:00:00Z`)) && new Date(`${date}T12:00:00Z`).toISOString().slice(0, 10) === date;
+    if (!valid(start) || !valid(end)) throw new HttpError(400, 'Choose valid start and end dates.');
+    if (start > end) throw new HttpError(400, 'End date must be on or after start date.');
+    const { players, sessions } = await this.periodData(start, end);
+    return {
+      start, end, sessionCount: sessions.length,
+      completedMatches: sessions.reduce((n, s) => n + s.matches.filter((m) => m.status === 'completed' && m.score && ['A', 'B'].includes(m.winner)).length, 0),
+      standings: computePeriodStandings(players, sessions),
+    };
+  }
+
+  async periodData(start, end) {
     const [dayRows, playerRows, presentRows, matchRows] = await this.db.readMany([
-      ['SELECT id, date, format FROM days WHERE date >= ? AND date < ? ORDER BY date, id', start, end],
+      ['SELECT id, date, format FROM days WHERE date >= ? AND date <= ? ORDER BY date, id', start, end],
       ['SELECT id, name FROM players'],
-      ['SELECT day_id, player_id FROM day_players WHERE day_id IN (SELECT id FROM days WHERE date >= ? AND date < ?)', start, end],
-      ['SELECT * FROM matches WHERE day_id IN (SELECT id FROM days WHERE date >= ? AND date < ?) ORDER BY seq', start, end],
+      ['SELECT day_id, player_id FROM day_players WHERE day_id IN (SELECT id FROM days WHERE date >= ? AND date <= ?)', start, end],
+      ['SELECT * FROM matches WHERE day_id IN (SELECT id FROM days WHERE date >= ? AND date <= ?) ORDER BY seq', start, end],
     ]);
     const presentBy = groupBy(presentRows, 'day_id', (r) => Number(r.player_id));
     const matchesBy = groupBy(matchRows, 'day_id', toMatch);
@@ -426,8 +445,7 @@ export class Store {
       matches: matchesBy.get(Number(day.id)) ?? [],
     }));
     const players = playerRows.map((r) => ({ id: Number(r.id), name: r.name }));
-    const standings = computeMonthlyStandings(players, sessions);
-    return { month, sessionCount: dayRows.length, standings, awards: monthlyAwards(standings) };
+    return { players, sessions };
   }
 
   // ---------- Matches ----------
