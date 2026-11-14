@@ -418,23 +418,27 @@ export class Store {
   }
 
   async statisticsView(start, end) {
+    const allTime = !start && !end;
     const valid = (date) => /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(Date.parse(`${date}T12:00:00Z`)) && new Date(`${date}T12:00:00Z`).toISOString().slice(0, 10) === date;
-    if (!valid(start) || !valid(end)) throw new HttpError(400, 'Choose valid start and end dates.');
+    if (!allTime && (!valid(start) || !valid(end))) throw new HttpError(400, 'Choose valid start and end dates.');
     if (start > end) throw new HttpError(400, 'End date must be on or after start date.');
     const { players, sessions } = await this.periodData(start, end);
     return {
-      start, end, sessionCount: sessions.length,
+      allTime, start: allTime ? sessions[0]?.date ?? null : start,
+      end: allTime ? sessions.at(-1)?.date ?? null : end, sessionCount: sessions.length,
       completedMatches: sessions.reduce((n, s) => n + s.matches.filter((m) => m.status === 'completed' && m.score && ['A', 'B'].includes(m.winner)).length, 0),
       standings: computePeriodStandings(players, sessions),
     };
   }
 
   async periodData(start, end) {
+    const filter = start && end ? 'WHERE date >= ? AND date <= ?' : '';
+    const params = filter ? [start, end] : [];
     const [dayRows, playerRows, presentRows, matchRows] = await this.db.readMany([
-      ['SELECT id, date, format FROM days WHERE date >= ? AND date <= ? ORDER BY date, id', start, end],
+      [`SELECT id, date, format FROM days ${filter} ORDER BY date, id`, ...params],
       ['SELECT id, name FROM players'],
-      ['SELECT day_id, player_id FROM day_players WHERE day_id IN (SELECT id FROM days WHERE date >= ? AND date <= ?)', start, end],
-      ['SELECT * FROM matches WHERE day_id IN (SELECT id FROM days WHERE date >= ? AND date <= ?) ORDER BY seq', start, end],
+      [`SELECT day_id, player_id FROM day_players WHERE day_id IN (SELECT id FROM days ${filter})`, ...params],
+      [`SELECT * FROM matches WHERE day_id IN (SELECT id FROM days ${filter}) ORDER BY seq`, ...params],
     ]);
     const presentBy = groupBy(presentRows, 'day_id', (r) => Number(r.player_id));
     const matchesBy = groupBy(matchRows, 'day_id', toMatch);

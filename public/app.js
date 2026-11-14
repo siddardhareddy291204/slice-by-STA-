@@ -273,7 +273,7 @@ async function route() {
     if (hash === '/' || hash === '/login') return await showHome();
     if (hash === '/players') return await showPlayers();
     if (hash === '/settings') return renderSettings();
-    if (hash === '/statistics') return await showStatistics(today().slice(0, 7));
+    if (hash === '/statistics') return await showStatistics();
     if ((m = hash.match(/^\/statistics\/(\d{4}-\d{2})$/))) return await showStatistics(m[1]);
     if ((m = hash.match(/^\/statistics\/(\d{4}-\d{2}-\d{2})\/(\d{4}-\d{2}-\d{2})$/))) return await showStatistics(null, m[1], m[2]);
     if (hash === '/history') return await showHistory(today());
@@ -451,7 +451,7 @@ function renderHome(days, players) {
 
     <div class="install-slot">${installTip()}</div>
     ${checklist(days, players)}
-    <a class="report-download" href="#/statistics">${I.chart}<span>All player statistics<small class="muted" style="display:block">Monthly records, custom periods & standings</small></span>${I.arrow}</a>
+    <a class="report-download" href="#/statistics">${I.chart}<span>Player statistics<small class="muted" style="display:block">All-time records & player standings</small></span>${I.arrow}</a>
     <div class="section-head"><h2>Recent sessions</h2><a class="section-link" href="#/history/${today()}">View all dates</a></div>
     ${days.length ? h`<div class="stack">${days.slice(0, 4).map(sessionCard)}</div>` : empty('No sessions yet', 'Start one when players arrive.')}
   </div>
@@ -595,28 +595,31 @@ async function showStatistics(month, start, end) {
     last.setDate(last.getDate() - 1);
     end = iso(last);
   }
-  await fresh(`statistics:${start}:${end}`, () => api(`/api/statistics?start=${start}&end=${end}`), (data) => {
+  const query = start && end ? `?start=${start}&end=${end}` : '';
+  await fresh(`statistics:${query || 'all'}`, () => api(`/api/statistics${query}`), (data) => {
     S.statistics = { ...data, month };
     renderStatistics();
   });
 }
 
 function renderStatistics() {
-  const { month, start, end, standings, sessionCount, completedMatches } = S.statistics;
-  const label = month ? fmtDate(start, { month: 'long', year: 'numeric' }) : `${fmtDate(start, { day: 'numeric', month: 'short', year: 'numeric' })} – ${fmtDate(end, { day: 'numeric', month: 'short', year: 'numeric' })}`;
-  paint(h`${topbar({ back: '#/', title: 'Statistics' })}<div class="wrap statistics-page">
-    <header class="statistics-hero"><span class="eyebrow">EVERY PLAYER · EVERY RESULT</span><h1>Player statistics</h1><p>Compare match records and games across any period.</p></header>
-    <section class="card statistics-filters" aria-label="Statistics period">
+  const { month, start, end, allTime, standings, sessionCount, completedMatches } = S.statistics;
+  const dateLabel = (date) => fmtDate(date, { day: 'numeric', month: 'short', year: 'numeric' });
+  const label = allTime ? 'All-time standings' : month ? fmtDate(start, { month: 'long', year: 'numeric' }) : `${dateLabel(start)} – ${dateLabel(end)}`;
+  paint(h`${topbar({ back: '#/', title: 'Player statistics' })}<div class="wrap statistics-page">
+    <header class="statistics-hero"><span class="eyebrow">EVERY PLAYER · EVERY RESULT</span><h1>Player statistics</h1><p>${allTime ? 'Every player’s record across all saved Tennis history.' : 'Player records for your selected period.'}</p>${allTime && start ? h`<p class="small statistics-rule">History covered: ${dateLabel(start)} – ${dateLabel(end)}</p>` : ''}</header>
+    ${!allTime ? h`<a class="btn btn-lime btn-block statistics-all-time" href="#/statistics">View all-time player statistics</a>` : ''}
+    <details class="card statistics-filter-panel" ${!allTime ? raw('open') : ''}><summary>Filter by month or custom dates</summary><div class="statistics-filters">
       <label class="field"><span>Choose a month</span><input type="month" value="${month || ''}" data-change="statisticsMonth"></label>
       <form data-form="statisticsPeriod"><p class="small muted">Or choose a custom period</p><div class="statistics-dates">
-        <label class="field"><span>From</span><input type="date" name="start" value="${start}" required></label>
-        <label class="field"><span>To (inclusive)</span><input type="date" name="end" value="${end}" required></label>
+        <label class="field"><span>From</span><input type="date" name="start" value="${start || today()}" required></label>
+        <label class="field"><span>To (inclusive)</span><input type="date" name="end" value="${end || today()}" required></label>
       </div><div class="error" data-error role="alert" hidden></div><button class="btn btn-dark btn-block" type="submit">Show statistics</button></form>
-    </section>
+    </div></details>
     <section aria-labelledby="statistics-heading"><div class="section-head"><h2 id="statistics-heading">${label}</h2></div>
       <p class="muted small">${sessionCount} session${sessionCount === 1 ? '' : 's'} · ${completedMatches} completed match${completedMatches === 1 ? '' : 'es'} · ${standings.length} players</p>
       <p class="note statistics-rule" id="statistics-rule">Ranked by most matches won, then fewest lost. Equal records share a rank. No minimum participation required.</p>
-      ${!completedMatches ? h`<p class="card statistics-empty" role="status">No completed matches in this period. Choose another month or widen the dates to see results.</p>` : ''}
+      ${!completedMatches ? h`<p class="card statistics-empty" role="status">${allTime ? 'No completed matches recorded yet. Player records will appear here as results are saved.' : 'No completed matches in this period. Choose another month or view all-time statistics.'}</p>` : ''}
       ${standings.length ? h`<p class="small muted statistics-scroll-hint">Swipe the table to see all columns →</p><div class="statistics-table-wrap" tabindex="0" role="region" aria-label="All player standings, scroll for more columns"><table class="statistics-table" aria-describedby="statistics-rule"><caption>All player standings · ${label}</caption><thead><tr><th scope="col">Rank</th><th scope="col">Player</th><th scope="col">Matches<br>played</th><th scope="col">Matches<br>won</th><th scope="col">Matches<br>lost</th><th scope="col">Win %</th><th scope="col">Games<br>won</th><th scope="col">Games<br>lost</th><th scope="col">Days<br>played</th></tr></thead><tbody>${standings.map((r) => h`<tr class="${r.rank === 1 ? 'statistics-leader' : ''}"><td>${r.rank ?? '—'}</td><th scope="row">${r.name}${!r.matchesPlayed ? h`<small>No completed matches</small>` : ''}</th><td>${r.matchesPlayed}</td><td class="statistics-wins">${r.matchWins}</td><td>${r.matchLosses}</td><td>${r.matchesPlayed ? `${Math.round(r.winPct * 100)}%` : '—'}</td><td>${r.gamesWon}</td><td>${r.gamesLost}</td><td>${r.participationDays}</td></tr>`)}</tbody></table></div>` : empty('No players yet', 'Add players to start tracking their records.')}
       <p class="note statistics-rule">Dates use the Tennis session date, including both endpoints. Only completed matches count. Doubles results count for each partner. Games include set matches only; match tiebreak points are not games. Players without completed matches remain unranked.</p>
     </section>
@@ -658,6 +661,7 @@ function renderPlayers() {
         </li>`;
   paint(h`${topbar({ back: '#/', title: 'Players' })}
   <div class="wrap">
+    <a class="report-download" href="#/statistics">${I.chart}<span>Player statistics<small class="muted" style="display:block">View every player’s full historical record</small></span>${I.arrow}</a>
     <label class="field" for="newPlayer"><span>Add a player</span></label>
     <form class="row" data-form="addPlayer">
       <input id="newPlayer" type="text" name="name" maxlength="40" required autocomplete="off">

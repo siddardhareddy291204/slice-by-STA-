@@ -457,7 +457,10 @@ input.glass-input::placeholder { color: rgba(255, 255, 255, 0.6); }
 .statistics-hero .eyebrow { color: var(--ok); }
 .statistics-hero h1 { margin: 8px 0 12px; }
 .statistics-hero p { color: var(--ink-2); }
-.statistics-filters { display: grid; gap: 20px; margin-bottom: 24px; }
+.statistics-filter-panel { margin-bottom: 24px; }
+.statistics-filter-panel summary { cursor: pointer; font-weight: 650; }
+.statistics-all-time { margin-bottom: 16px; }
+.statistics-filters { display: grid; gap: 20px; margin-top: 20px; }
 .statistics-filters form { border-top: 1px solid var(--line); padding-top: 16px; }
 .statistics-dates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }
 @media (max-width: 380px) { .statistics-dates { grid-template-columns: 1fr; } }

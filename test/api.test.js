@@ -123,7 +123,20 @@ test('organizer flow end to end, and the player link is read-only', async (t) =>
   assert.ok(emptyPeriod.standings.every((r) => r.rank === null));
   assert.equal((await call('GET', '/api/statistics?start=2026-02-30&end=2026-10-17')).status, 400);
   assert.equal((await call('GET', '/api/statistics?start=2026-10-17&end=2026-09-30')).status, 400);
-  assert.equal((await call('GET', '/api/statistics')).status, 400);
+  assert.equal((await call('GET', '/api/statistics?start=2026-09-30')).status, 400);
+  assert.equal((await call('GET', '/api/statistics?end=2026-10-17')).status, 400);
+  const historic = (await call('POST', '/api/days', { date: '2024-01-01', format: 'set', courts: 1, playerIds: ids })).data;
+  const [historicMatch] = (await call('POST', `/api/days/${historic.id}/matches`, { matches: [{ court: 1, kind: 'singles', teamA: [ids[0]], teamB: [ids[1]] }] })).data;
+  await call('POST', `/api/matches/${historicMatch.id}/result`, { score: { a: 6, b: 2 } });
+  const allTime = (await call('GET', '/api/statistics')).data;
+  assert.equal(allTime.allTime, true);
+  assert.equal(allTime.start, '2024-01-01');
+  assert.equal(allTime.end, '2026-10-17');
+  assert.equal(allTime.completedMatches, 3);
+  assert.equal(allTime.standings.length, 5);
+  const lifetimeAsha = allTime.standings.find((r) => r.playerId === ids[0]);
+  assert.deepEqual([lifetimeAsha.matchesPlayed, lifetimeAsha.matchWins, lifetimeAsha.matchLosses, lifetimeAsha.gamesWon, lifetimeAsha.gamesLost], [3, 2, 1, 10, 8]);
+  assert.equal((await call('GET', '/api/statistics', null, { auth: false })).status, 401);
   assert.equal((await call('GET', '/api/statistics?start=2026-09-30&end=2026-10-17', null, { auth: false })).status, 401);
 
   // Session schedule, finish state and both awards survive a fresh API read.
