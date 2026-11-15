@@ -770,6 +770,7 @@ function renderPlayers() {
         </form><div class="error" data-error hidden style="margin-bottom:10px"></div></li>`
       : h`<li class="player-row ${p.archived ? 'archived' : ''}">
           ${avatar(p)}<span class="name">${p.name}</span>
+          <button class="btn btn-light btn-sm" data-act="editPhoto" data-id="${p.id}" aria-label="Edit photo for ${p.name}">Photo</button>
           ${p.archived
             ? h`<button class="btn btn-light btn-sm" data-act="archivePlayer" data-id="${p.id}" data-on="0">Restore</button>`
             : h`<button class="circle" data-act="editPlayer" data-id="${p.id}" aria-label="Rename ${p.name}">${I.pencil}</button>
@@ -821,6 +822,15 @@ FORM.password = async ({ current, next }, f) => {
 ACT.editPlayer = ({ id }) => {
   S.editingPlayer = +id;
   renderPlayers();
+};
+ACT.editPhoto = ({ id }) => {
+  S.photoPlayer = Number(id);
+  S.photoDraft = undefined;
+  S.editingPlayer = null;
+  renderPlayers();
+  const editor = document.querySelector('.photo-editor');
+  editor?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  editor?.querySelector('input[type=file]')?.focus({ preventScroll: true });
 };
 ACT.cancelEdit = () => {
   S.editingPlayer = null;
@@ -2079,7 +2089,7 @@ ACT.copyInstall = async () => {
 };
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-  addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  addEventListener('load', () => navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).then((registration) => registration.update()).catch(() => {}));
 }
 
 // ---------- Settings ----------
