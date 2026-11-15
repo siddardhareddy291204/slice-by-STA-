@@ -2,11 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Store, HttpError } from './store.js';
 import { renderSessionPdf, reportFilename } from './report.js';
+import { renderStatisticsPdf, statisticsFilename } from './statistics-report.js';
 
 export { HttpError };
 
 const COOKIE = 'slice_sid';
-const MAX_BODY = 64 * 1024;
+const MAX_BODY = 256 * 1024;
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -112,10 +113,33 @@ export async function createApp({ dbFile, rootDir }) {
   on('GET', '/api/players', 'organizer', () => store.listPlayers());
   on('POST', '/api/players', 'organizer', ({ body }) => store.addPlayer(body.name));
   on('PATCH', '/api/players/(\\d+)', 'organizer', ({ params, body }) => store.updatePlayer(id(params[0]), body));
+  on('GET', '/api/players/(\\d+)/photo', 'public', ({ params }) => store.playerPhoto(id(params[0])));
+  on('POST', '/api/players/(\\d+)/photo', 'organizer', ({ params, body }) => store.savePlayerPhoto(id(params[0]), body.photo));
+  on('POST', '/api/players/(\\d+)/profile-link', 'organizer', ({ params }) => store.profileLink(id(params[0])));
+  on('GET', '/api/profile/([\\w-]+)', 'public', ({ params }) => store.profileByToken(params[0]));
+  on('POST', '/api/profile/([\\w-]+)', 'public', async ({ params, body }) => {
+    const player = await store.profileByToken(params[0]);
+    return store.savePlayerPhoto(player.id, body.photo);
+  });
 
   on('GET', '/api/days', 'organizer', ({ url }) => store.listDays({ month: url.searchParams.get('month') ?? undefined }));
   on('GET', '/api/monthly', 'organizer', ({ url }) => store.monthlyView(url.searchParams.get('month') ?? ''));
-  on('GET', '/api/statistics', 'organizer', ({ url }) => store.statisticsView(url.searchParams.get('start') ?? '', url.searchParams.get('end') ?? ''));
+  const statistics = (url) => store.statisticsView(url.searchParams.get('start') ?? '', url.searchParams.get('end') ?? '', url.searchParams.get('ranking') ?? 'percentage');
+  const statisticsPdf = async (url) => {
+    const view = await statistics(url);
+    return { pdf: await renderStatisticsPdf(view), filename: statisticsFilename(view) };
+  };
+  on('GET', '/api/statistics', 'organizer', ({ url }) => statistics(url));
+  on('GET', '/api/statistics/report.pdf', 'organizer', ({ url }) => statisticsPdf(url));
+  on('POST', '/api/statistics/share', 'organizer', () => store.statisticsShare());
+  on('GET', '/api/reports/([\\w-]+)', 'public', async ({ params, url }) => {
+    await store.checkStatisticsToken(params[0]);
+    return statistics(url);
+  });
+  on('GET', '/api/reports/([\\w-]+)/report.pdf', 'public', async ({ params, url }) => {
+    await store.checkStatisticsToken(params[0]);
+    return statisticsPdf(url);
+  });
   on('POST', '/api/days', 'organizer', ({ body }) => store.createDay(body));
   on('GET', '/api/days/(\\d+)', 'organizer', async ({ params }) => store.dayView(id(params[0]), { organizer: true }));
   on('GET', '/api/days/(\\d+)/report.pdf', 'organizer', async ({ params }) => {
@@ -198,6 +222,10 @@ export async function createApp({ dbFile, rootDir }) {
     }
     try {
       const result = await handleApi(req, res, url);
+      if (result?.image) {
+        res.writeHead(200, { 'Content-Type': result.type, 'Content-Length': result.image.length, 'Cache-Control': 'no-store' });
+        return res.end(result.image);
+      }
       if (result?.pdf) {
         res.writeHead(200, {
           'Content-Type': 'application/pdf',

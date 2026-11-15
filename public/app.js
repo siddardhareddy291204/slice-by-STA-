@@ -1,5 +1,5 @@
 import { FORMATS, replay, pointDisplay, pointSituation, validateResult, formatScore, scoreFromState } from '/shared/scoring.js';
-import { MIN_MATCHES, MIN_PARTICIPATION_DAYS } from '/shared/standings.js';
+import { MIN_MATCHES, MIN_PARTICIPATION_DAYS, STATISTICS_MIN_MATCHES } from '/shared/standings.js';
 
 // ---------- Tiny templating: h`` escapes values, nested h`` stays raw ----------
 class Raw { constructor(s) { this.s = s; } }
@@ -25,6 +25,11 @@ const S = {
   editingPlayer: null,
   history: null,
   statistics: null,
+  reportToken: null,
+  statisticsRanking: 'percentage',
+  profile: null,
+  photoPlayer: null,
+  photoDraft: undefined,
   route: null,
 };
 
@@ -247,6 +252,23 @@ async function route() {
     return showPublic(pub[1]);
   }
   try {
+    S.reportToken = null;
+    const report = location.hash.match(/^#\/report\/([\w-]+)(?:\?(.*))?$/);
+    if (report) {
+      S.reportToken = report[1];
+      const query = new URLSearchParams(report[2] || '');
+      S.statisticsRanking = query.get('ranking') || 'percentage';
+      return await showStatistics(null, query.get('start'), query.get('end'));
+    }
+    const profile = location.hash.match(/^#\/profile\/([\w-]+)$/);
+    if (profile) {
+      const player = await api(`/api/profile/${profile[1]}`);
+      if (nav !== navId) return;
+      S.profile = { ...player, token: profile[1] };
+      S.photoDraft = undefined;
+      return renderProfile();
+    }
+    S.profile = null;
     if (!S.me) {
       // Trust the last known sign-in so the first screen paints at once; verify in the background.
       let saved = null;
@@ -595,20 +617,28 @@ async function showStatistics(month, start, end) {
     last.setDate(last.getDate() - 1);
     end = iso(last);
   }
-  const query = start && end ? `?start=${start}&end=${end}` : '';
-  await fresh(`statistics:${query || 'all'}`, () => api(`/api/statistics${query}`), (data) => {
+  const query = new URLSearchParams({ ranking: S.statisticsRanking });
+  if (start || end) { query.set('start', start || ''); query.set('end', end || ''); }
+  const base = S.reportToken ? `/api/reports/${S.reportToken}` : '/api/statistics';
+  await fresh(`statistics:${base}:${query}`, () => api(`${base}?${query}`), (data) => {
     S.statistics = { ...data, month };
     renderStatistics();
   });
 }
 
 function renderStatistics() {
-  const { month, start, end, allTime, standings, sessionCount, completedMatches } = S.statistics;
+  const { month, start, end, allTime, standings, sessionCount, completedMatches, ranking } = S.statistics;
+  const allHref = S.reportToken ? `#/report/${S.reportToken}` : '#/statistics';
+  const query = new URLSearchParams({ ranking });
+  if (!allTime) { query.set('start', start); query.set('end', end); }
+  const pdf = `${S.reportToken ? `/api/reports/${S.reportToken}` : '/api/statistics'}/report.pdf?${query}`;
   const dateLabel = (date) => fmtDate(date, { day: 'numeric', month: 'short', year: 'numeric' });
   const label = allTime ? 'All-time standings' : month ? fmtDate(start, { month: 'long', year: 'numeric' }) : `${dateLabel(start)} – ${dateLabel(end)}`;
   paint(h`${topbar({ back: '#/', title: 'Player statistics' })}<div class="wrap statistics-page">
     <header class="statistics-hero"><span class="eyebrow">EVERY PLAYER · EVERY RESULT</span><h1>Player statistics</h1><p>${allTime ? 'Every player’s record across all saved Tennis history.' : 'Player records for your selected period.'}</p>${allTime && start ? h`<p class="small statistics-rule">History covered: ${dateLabel(start)} – ${dateLabel(end)}</p>` : ''}</header>
-    ${!allTime ? h`<a class="btn btn-lime btn-block statistics-all-time" href="#/statistics">View all-time player statistics</a>` : ''}
+    <div class="statistics-actions"><a class="btn btn-dark" href="${pdf}" download>${I.download} Download PDF</a><button class="btn btn-lime" data-act="shareStatistics">${I.share} Share report</button></div>
+    ${S.reportToken ? h`<p class="note statistics-rule">Read-only player report. Share this link with the group; no sign-in needed.</p>` : ''}
+    ${!allTime ? h`<a class="btn btn-lime btn-block statistics-all-time" href="${allHref}">View all-time player statistics</a>` : ''}
     <details class="card statistics-filter-panel" ${!allTime ? raw('open') : ''}><summary>Filter by month or custom dates</summary><div class="statistics-filters">
       <label class="field"><span>Choose a month</span><input type="month" value="${month || ''}" data-change="statisticsMonth"></label>
       <form data-form="statisticsPeriod"><p class="small muted">Or choose a custom period</p><div class="statistics-dates">
@@ -618,20 +648,106 @@ function renderStatistics() {
     </div></details>
     <section aria-labelledby="statistics-heading"><div class="section-head"><h2 id="statistics-heading">${label}</h2></div>
       <p class="muted small">${sessionCount} session${sessionCount === 1 ? '' : 's'} · ${completedMatches} completed match${completedMatches === 1 ? '' : 'es'} · ${standings.length} players</p>
-      <p class="note statistics-rule" id="statistics-rule">Ranked by most matches won, then fewest lost. Equal records share a rank. No minimum participation required.</p>
+      <div class="ranking-toggle" role="group" aria-label="Rank players by"><button class="btn ${ranking === 'percentage' ? 'btn-dark' : 'btn-light'}" data-act="statisticsRanking" data-ranking="percentage" aria-pressed="${ranking === 'percentage'}">Win percentage</button><button class="btn ${ranking === 'wins' ? 'btn-dark' : 'btn-light'}" data-act="statisticsRanking" data-ranking="wins" aria-pressed="${ranking === 'wins'}">Matches won</button></div>
+      <p class="note statistics-rule" id="statistics-rule">Minimum ${STATISTICS_MIN_MATCHES} completed matches in this period to rank. ${ranking === 'percentage' ? 'Ranked by win percentage, then matches won.' : 'Ranked by matches won, then win percentage.'} Equal records share a rank. Players below the minimum are shown unranked.</p>
       ${!completedMatches ? h`<p class="card statistics-empty" role="status">${allTime ? 'No completed matches recorded yet. Player records will appear here as results are saved.' : 'No completed matches in this period. Choose another month or view all-time statistics.'}</p>` : ''}
-      ${standings.length ? h`<p class="small muted statistics-scroll-hint">Swipe the table to see all columns →</p><div class="statistics-table-wrap" tabindex="0" role="region" aria-label="All player standings, scroll for more columns"><table class="statistics-table" aria-describedby="statistics-rule"><caption>All player standings · ${label}</caption><thead><tr><th scope="col">Rank</th><th scope="col">Player</th><th scope="col">Matches<br>played</th><th scope="col">Matches<br>won</th><th scope="col">Matches<br>lost</th><th scope="col">Win %</th><th scope="col">Games<br>won</th><th scope="col">Games<br>lost</th><th scope="col">Days<br>played</th></tr></thead><tbody>${standings.map((r) => h`<tr class="${r.rank === 1 ? 'statistics-leader' : ''}"><td>${r.rank ?? '—'}</td><th scope="row">${r.name}${!r.matchesPlayed ? h`<small>No completed matches</small>` : ''}</th><td>${r.matchesPlayed}</td><td class="statistics-wins">${r.matchWins}</td><td>${r.matchLosses}</td><td>${r.matchesPlayed ? `${Math.round(r.winPct * 100)}%` : '—'}</td><td>${r.gamesWon}</td><td>${r.gamesLost}</td><td>${r.participationDays}</td></tr>`)}</tbody></table></div>` : empty('No players yet', 'Add players to start tracking their records.')}
+      ${standings.length ? h`<p class="small muted statistics-scroll-hint">Swipe the table to see all columns →</p><div class="statistics-table-wrap" tabindex="0" role="region" aria-label="All player standings, scroll for more columns"><table class="statistics-table" aria-describedby="statistics-rule"><caption>${ranking === 'percentage' ? 'Win percentage' : 'Matches won'} · ${label}</caption><thead><tr><th scope="col">Rank</th><th scope="col">Player</th><th scope="col">Matches<br>played</th><th scope="col">Matches<br>won</th><th scope="col">Matches<br>lost</th><th scope="col">Win %</th><th scope="col">Games<br>won</th><th scope="col">Games<br>lost</th><th scope="col">Days<br>played</th></tr></thead><tbody>${standings.map((r) => h`<tr class="${r.rank === 1 ? 'statistics-leader' : ''}"><td>${r.rank ?? '—'}</td><th scope="row"><span class="statistics-player">${avatar(r)}<span>${r.name}${!r.eligible ? h`<small>${r.matchesPlayed}/15 matches · ${r.matchesNeeded} more to rank</small>` : ''}</span></span></th><td>${r.matchesPlayed}</td><td class="statistics-wins">${r.matchWins}</td><td>${r.matchLosses}</td><td>${r.matchesPlayed ? `${(r.winPct * 100).toFixed(1)}%` : '—'}</td><td>${r.gamesWon}</td><td>${r.gamesLost}</td><td>${r.participationDays}</td></tr>`)}</tbody></table></div>` : empty('No players yet', 'Add players to start tracking their records.')}
       <p class="note statistics-rule">Dates use the Tennis session date, including both endpoints. Only completed matches count. Doubles results count for each partner. Games include set matches only; match tiebreak points are not games. Players without completed matches remain unranked.</p>
     </section>
-  </div>${homeTabs('statistics')}`);
+  </div>${S.reportToken ? '' : homeTabs('statistics')}`);
+}
+function statisticsPeriodHref(start, end) {
+  if (!S.reportToken) return `#/statistics/${start}/${end}`;
+  return `#/report/${S.reportToken}?${new URLSearchParams({ start, end, ranking: S.statisticsRanking })}`;
 }
 CHANGE.statisticsMonth = (_, el) => {
-  if (/^\d{4}-(0[1-9]|1[0-2])$/.test(el.value)) go(`#/statistics/${el.value}`);
+  if (/^\d{4}-(0[1-9]|1[0-2])$/.test(el.value)) {
+    if (!S.reportToken) return go(`#/statistics/${el.value}`);
+    const last = new Date(`${monthDate(el.value, 1)}T12:00:00`);
+    last.setDate(last.getDate() - 1);
+    go(statisticsPeriodHref(`${el.value}-01`, iso(last)));
+  }
 };
 FORM.statisticsPeriod = ({ start, end }) => {
   if (!validHistoryDate(start) || !validHistoryDate(end)) throw new Error('Choose valid start and end dates.');
   if (start > end) throw new Error('End date must be on or after start date.');
-  go(`#/statistics/${start}/${end}`);
+  go(statisticsPeriodHref(start, end));
+};
+ACT.statisticsRanking = ({ ranking }) => {
+  S.statisticsRanking = ranking;
+  if (S.reportToken) {
+    const view = S.statistics;
+    go(view.allTime ? `#/report/${S.reportToken}?ranking=${ranking}` : statisticsPeriodHref(view.start, view.end));
+  } else route();
+};
+async function shareUrl(title, url) {
+  if (navigator.share) {
+    try { await navigator.share({ title, url }); return; }
+    catch (e) { if (e.name === 'AbortError') return; }
+  }
+  try { await navigator.clipboard.writeText(url); toast('Link copied'); }
+  catch { prompt('Copy this link:', url); }
+}
+ACT.shareStatistics = async () => {
+  const { token } = S.reportToken ? { token: S.reportToken } : await api('/api/statistics/share', { method: 'POST' });
+  const query = new URLSearchParams({ ranking: S.statisticsRanking });
+  if (!S.statistics.allTime) { query.set('start', S.statistics.start); query.set('end', S.statistics.end); }
+  await shareUrl('Slice player statistics', `${location.origin}/#/report/${token}?${query}`);
+};
+
+// Profile photos are resized on the phone before being stored with the player.
+function avatar(player, large = false, preview) {
+  const src = preview === undefined ? player.photoUrl : preview;
+  return h`<span class="player-avatar ${large ? 'large' : ''}">${src ? h`<img src="${src}" alt="${player.name} profile photo" loading="lazy">` : h`<span aria-hidden="true">${player.name.split(/\s+/).map((s) => s[0]).slice(0, 2).join('')}</span>`}</span>`;
+}
+function photoEditor(player, self = false) {
+  return h`<section class="card photo-editor"><span class="eyebrow">PLAYER PROFILES</span><h2>${self ? 'Your profile photo' : 'Put a face to every player'}</h2><p class="note">Add a photo from your camera or gallery. It appears beside your player statistics.</p>
+    ${!self ? h`<label class="field"><span>Choose player</span><select data-change="photoPlayer">${S.players.map((p) => h`<option value="${p.id}" ${p.id === player.id ? 'selected' : ''}>${p.name}</option>`)}</select></label>` : ''}
+    <div class="photo-preview">${avatar(player, true, S.photoDraft)}<strong>${player.name}</strong></div>
+    <label class="btn btn-light photo-picker">Choose photo<input type="file" accept="image/*" data-change="profilePhoto" aria-label="Choose profile photo for ${player.name}"></label>
+    <p class="small muted">Photo is cropped to a square. Preview it before saving.</p>
+    <div class="statistics-actions"><button class="btn btn-lime" data-act="savePhoto" ${S.photoDraft === undefined ? 'disabled' : ''}>Save photo</button>${player.photoUrl ? h`<button class="btn btn-text" data-act="removePhoto">Remove photo</button>` : ''}</div>
+    ${!self ? h`<button class="btn btn-dark btn-block" data-act="shareProfile">${I.share} Send private photo-upload link</button><p class="small muted">Send this link only to ${player.name}. Anyone with it can change this player’s photo.</p>` : h`<p class="small muted">This private link updates only your photo. Keep it to yourself.</p>`}
+  </section>`;
+}
+const currentPhotoPlayer = () => S.profile || S.players.find((p) => p.id === S.photoPlayer) || S.players[0];
+function renderProfile() {
+  paint(h`<div class="wrap profile-page"><header class="statistics-hero">${wordmark(true)}<h1>Hi, ${S.profile.name}</h1><p>Make your player profile your own.</p></header>${photoEditor(S.profile, true)}</div>`);
+}
+CHANGE.photoPlayer = (_, el) => { S.photoPlayer = Number(el.value); S.photoDraft = undefined; renderPlayers(); };
+CHANGE.profilePhoto = async (_, el) => {
+  const file = el.files?.[0];
+  if (!file) return;
+  try {
+    if (!file.type.startsWith('image/') || file.size > 10 * 1024 * 1024) throw new Error('Choose an image smaller than 10 MB.');
+    const player = currentPhotoPlayer();
+    const playerId = player.id;
+    const editingScreen = screenKey;
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 256;
+    const context = canvas.getContext('2d'); context.fillStyle = '#ffffff'; context.fillRect(0, 0, 256, 256);
+    const size = Math.min(bitmap.width, bitmap.height);
+    context.drawImage(bitmap, (bitmap.width - size) / 2, (bitmap.height - size) / 2, size, size, 0, 0, 256, 256); bitmap.close();
+    if (screenKey !== editingScreen || currentPhotoPlayer()?.id !== playerId) return;
+    S.photoDraft = canvas.toDataURL('image/jpeg', .85);
+    S.profile ? renderProfile() : renderPlayers();
+  } catch (err) { toast(err.message || 'Could not open this photo. Try JPEG or PNG.', true); }
+};
+async function savePhoto(photo) {
+  const player = currentPhotoPlayer();
+  const endpoint = S.profile ? `/api/profile/${S.profile.token}` : `/api/players/${player.id}/photo`;
+  const updated = await api(endpoint, { method: 'POST', body: { photo } });
+  S.photoDraft = undefined;
+  S.players = S.players.map((p) => p.id === updated.id ? { ...p, ...updated } : p);
+  if (S.profile) { S.profile = { ...S.profile, ...updated }; renderProfile(); } else renderPlayers();
+  toast(photo ? 'Profile photo saved' : 'Profile photo removed');
+}
+ACT.savePhoto = () => S.photoDraft !== undefined && savePhoto(S.photoDraft);
+ACT.removePhoto = () => savePhoto(null);
+ACT.shareProfile = async () => {
+  const player = currentPhotoPlayer();
+  const { token } = await api(`/api/players/${player.id}/profile-link`, { method: 'POST' });
+  await shareUrl(`${player.name} - private profile photo link`, `${location.origin}/#/profile/${token}`);
 };
 
 // ---------- Players ----------
@@ -653,7 +769,7 @@ function renderPlayers() {
           <button class="circle" type="button" data-act="cancelEdit" aria-label="Cancel">${I.x}</button>
         </form><div class="error" data-error hidden style="margin-bottom:10px"></div></li>`
       : h`<li class="player-row ${p.archived ? 'archived' : ''}">
-          <span class="name">${p.name}</span>
+          ${avatar(p)}<span class="name">${p.name}</span>
           ${p.archived
             ? h`<button class="btn btn-light btn-sm" data-act="archivePlayer" data-id="${p.id}" data-on="0">Restore</button>`
             : h`<button class="circle" data-act="editPlayer" data-id="${p.id}" aria-label="Rename ${p.name}">${I.pencil}</button>
@@ -662,6 +778,7 @@ function renderPlayers() {
   paint(h`${topbar({ back: '#/', title: 'Players' })}
   <div class="wrap">
     <a class="report-download" href="#/statistics">${I.chart}<span>Player statistics<small class="muted" style="display:block">View every player’s full historical record</small></span>${I.arrow}</a>
+    ${S.players.length ? photoEditor(currentPhotoPlayer()) : ''}
     <label class="field" for="newPlayer"><span>Add a player</span></label>
     <form class="row" data-form="addPlayer">
       <input id="newPlayer" type="text" name="name" maxlength="40" required autocomplete="off">

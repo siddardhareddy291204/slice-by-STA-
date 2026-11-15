@@ -1,6 +1,10 @@
 # Slice by STA
 
-Player Statistics is a dedicated page available from Home, the Statistics tab, Players, and monthly recognition. It opens with all-time standings calculated from every saved Tennis session, showing every player's matches played/won/lost, win percentage, games won/lost and participation days. Optional filters let you choose a month or an inclusive custom date range, with a link back to all-time records. Rankings use most match wins, then fewest losses; equal records share a rank. Players with no completed results remain visible and unranked. There is no minimum participation threshold. Only completed matches count; match tiebreak points are excluded from game totals.
+Player Statistics opens with all historical records and offers month/custom-period filters. Switch between win-percentage ranking (then matches won) and matches-won ranking (then win percentage). Both require **15 completed matches within the selected period**; players below the minimum stay visible with progress toward eligibility. Exact ties share a rank. Each saved set-format match represents one set; completed match tiebreaks count as matches, but their points are excluded from game totals. Daily and monthly awards retain their separate rules.
+
+**Download PDF** includes both rankings and all players. **Share report** creates a read-only link anyone in the group can open without signing in, including PDF downloads. It shares the selected period and ranking; the report stays current as results change. Keep the link within the group.
+
+**Profile photos:** the Players page has a prominent editor with a player selector, square preview, save and remove controls. Photos are cropped/resized to 256 pixels on the device and stored in the database, so they persist across deployments. **Send private photo-upload link** lets an individual update only their own photo without the club password. Treat each upload link as private: anyone holding it can replace that player's photo. Public reports do not expose upload links.
 
 The courtside home for a day of tennis. Whoever is running the courts marks who showed up, gets fair singles/doubles suggestions, scores matches point by point (or enters a final score), and Slice by STA keeps every player’s record, the session leaderboard and **Player of the Day** up to date. Players follow along on a read-only link.
 

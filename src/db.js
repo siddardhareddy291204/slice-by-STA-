@@ -80,6 +80,8 @@ CREATE INDEX IF NOT EXISTS activity_day ON activity(day_id, id);
 
 // Columns added after the first release; applied to older databases on open.
 const MIGRATIONS = [
+  ['players', 'profile_photo', 'ALTER TABLE players ADD COLUMN profile_photo TEXT'],
+  ['players', 'profile_token', 'ALTER TABLE players ADD COLUMN profile_token TEXT'],
   ['days', 'scorer', 'ALTER TABLE days ADD COLUMN scorer TEXT'],
   ['activity', 'by_name', 'ALTER TABLE activity ADD COLUMN by_name TEXT'],
   ['days', 'start_time', 'ALTER TABLE days ADD COLUMN start_time TEXT'],

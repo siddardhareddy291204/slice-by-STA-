@@ -137,6 +137,56 @@ test('organizer flow end to end, and the player link is read-only', async (t) =>
   const lifetimeAsha = allTime.standings.find((r) => r.playerId === ids[0]);
   assert.deepEqual([lifetimeAsha.matchesPlayed, lifetimeAsha.matchWins, lifetimeAsha.matchLosses, lifetimeAsha.gamesWon, lifetimeAsha.gamesLost], [3, 2, 1, 10, 8]);
   assert.equal((await call('GET', '/api/statistics', null, { auth: false })).status, 401);
+  assert.equal(allTime.minimumMatches, 15);
+  assert.equal(allTime.ranking, 'percentage');
+  assert.ok(allTime.standings.every((r) => r.rank === null && !r.eligible));
+  assert.equal((await call('GET', '/api/statistics?ranking=wins')).data.ranking, 'wins');
+  assert.equal((await call('GET', '/api/statistics?ranking=unknown')).status, 400);
+
+  // Sharing creates a read-only report, not an organizer session or profile edit link.
+  assert.equal((await call('POST', '/api/statistics/share', null, { auth: false })).status, 401);
+  const reportToken = (await call('POST', '/api/statistics/share')).data.token;
+  assert.equal((await call('GET', '/api/reports/invalid', null, { auth: false })).status, 404);
+  const shared = await call('GET', `/api/reports/${reportToken}?ranking=wins`, null, { auth: false });
+  assert.equal(shared.status, 200);
+  assert.equal(shared.data.ranking, 'wins');
+  assert.equal(shared.data.completedMatches, allTime.completedMatches);
+  assert.ok(shared.data.standings.every((r) => !('profile_token' in r)));
+  assert.equal((await call('POST', `/api/reports/${reportToken}`, { name: 'Changed' }, { auth: false })).status, 404);
+  const sharedPeriod = (await call('GET', `/api/reports/${reportToken}?start=2026-09-30&end=2026-09-30`, null, { auth: false })).data;
+  assert.equal(sharedPeriod.completedMatches, 1);
+  for (const url of ['/api/statistics/report.pdf', `/api/reports/${reportToken}/report.pdf?start=2026-09-30&end=2026-09-30`]) {
+    const res = await fetch(base + url, { headers: url.startsWith('/api/statistics') ? { Cookie: cookie } : {} });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'application/pdf');
+    assert.equal(Buffer.from(await res.arrayBuffer()).subarray(0, 5).toString(), '%PDF-');
+  }
+  assert.equal((await fetch(`${base}/api/statistics/report.pdf`)).status, 401);
+  assert.equal((await fetch(`${base}/api/reports/invalid/report.pdf`)).status, 404);
+
+  // Photo links allow only the selected player's photo; organizer-only actions stay protected.
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jwWQAAAAASUVORK5CYII=';
+  assert.equal((await call('POST', `/api/players/${ids[0]}/photo`, { photo: png }, { auth: false })).status, 401);
+  assert.equal((await call('POST', `/api/players/${ids[0]}/profile-link`, null, { auth: false })).status, 401);
+  const profileToken = (await call('POST', `/api/players/${ids[0]}/profile-link`)).data.token;
+  assert.equal((await call('POST', `/api/players/${ids[0]}/profile-link`)).data.token, profileToken);
+  assert.equal((await call('GET', '/api/profile/invalid', null, { auth: false })).status, 404);
+  assert.equal((await call('POST', `/api/profile/${profileToken}`, { photo: 'data:image/svg+xml;base64,PHN2Zz4=' }, { auth: false })).status, 400);
+  assert.equal((await call('POST', `/api/profile/${profileToken}`, { photo: 'data:image/png;base64,aW52YWxpZA==' }, { auth: false })).status, 400);
+  const savedPhoto = await call('POST', `/api/profile/${profileToken}`, { photo: png, name: 'Not allowed', id: ids[1] }, { auth: false });
+  assert.equal(savedPhoto.status, 200);
+  assert.equal(savedPhoto.data.name, names[0]);
+  assert.ok(savedPhoto.data.photoUrl);
+  assert.equal((await call('GET', `/api/profile/${profileToken}`, null, { auth: false })).data.photoUrl, savedPhoto.data.photoUrl);
+  const image = await fetch(base + savedPhoto.data.photoUrl);
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get('content-type'), 'image/png');
+  const playersWithPhoto = (await call('GET', '/api/players')).data;
+  assert.equal(playersWithPhoto.find((p) => p.id === ids[1]).photoUrl, null);
+  assert.equal((await call('PATCH', `/api/players/${ids[0]}`, { name: names[0] })).data.photoUrl, savedPhoto.data.photoUrl);
+  assert.equal((await call('GET', `/api/reports/${reportToken}`, null, { auth: false })).data.standings.find((r) => r.playerId === ids[0]).photoUrl, savedPhoto.data.photoUrl);
+  assert.equal((await call('POST', `/api/profile/${profileToken}`, { photo: null }, { auth: false })).status, 200);
+  assert.equal((await fetch(base + savedPhoto.data.photoUrl)).status, 404);
   assert.equal((await call('GET', '/api/statistics?start=2026-09-30&end=2026-10-17', null, { auth: false })).status, 401);
 
   // Session schedule, finish state and both awards survive a fresh API read.

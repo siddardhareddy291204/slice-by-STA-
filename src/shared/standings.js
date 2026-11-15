@@ -154,17 +154,27 @@ export function monthlyAward(standings, metric = 'games') {
   };
 }
 
-// Period statistics have no award eligibility threshold. Equal match records
-// share a rank; players with no completed results are shown without a rank.
-export function computePeriodStandings(players, sessions) {
-  const compare = (a, b) => b.matchWins - a.matchWins || a.matchLosses - b.matchLosses;
-  const rows = computeMonthlyStandings(players, sessions).map(({ eligible, ...r }) => ({
-    ...r, winPct: r.matchesPlayed ? r.matchWins / r.matchesPlayed : 0,
+// Period rankings require 15 completed matches. Daily/monthly awards keep
+// their separate rules. Below-threshold players stay visible without a rank.
+export const STATISTICS_MIN_MATCHES = 15;
+export function computePeriodStandings(players, sessions, ranking = 'percentage') {
+  return rankStatisticsRows(computeMonthlyStandings(players, sessions), ranking);
+}
+
+export function rankStatisticsRows(standings, ranking = 'percentage') {
+  const byPct = (a, b) => b.matchWins * a.matchesPlayed - a.matchWins * b.matchesPlayed;
+  const compare = ranking === 'wins'
+    ? (a, b) => b.matchWins - a.matchWins || byPct(a, b)
+    : (a, b) => byPct(a, b) || b.matchWins - a.matchWins;
+  const rows = standings.map(({ eligible, ...r }) => ({
+    ...r, eligible: r.matchesPlayed >= STATISTICS_MIN_MATCHES,
+    matchesNeeded: Math.max(0, STATISTICS_MIN_MATCHES - r.matchesPlayed),
+    winPct: r.matchesPlayed ? r.matchWins / r.matchesPlayed : 0,
   }));
-  rows.sort((a, b) => Number(b.matchesPlayed > 0) - Number(a.matchesPlayed > 0) || compare(a, b) || a.name.localeCompare(b.name));
+  rows.sort((a, b) => Number(b.eligible) - Number(a.eligible) || Number(b.matchesPlayed > 0) - Number(a.matchesPlayed > 0) || compare(a, b) || a.name.localeCompare(b.name));
   let previous;
   rows.forEach((r, i) => {
-    r.rank = r.matchesPlayed ? (previous && compare(previous, r) === 0 ? previous.rank : i + 1) : null;
+    r.rank = r.eligible ? (previous?.eligible && compare(previous, r) === 0 ? previous.rank : i + 1) : null;
     previous = r;
   });
   return rows;

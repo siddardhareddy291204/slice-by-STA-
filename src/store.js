@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { openDb } from './db.js';
 import { FORMATS, replay, scoreFromState, validateResult, formatScore } from './shared/scoring.js';
-import { computeStandings, playerOfTheDay, pairOfTheDay, sessionAwards, computeMonthlyStandings, monthlyAwards, computePeriodStandings } from './shared/standings.js';
+import { computeStandings, playerOfTheDay, pairOfTheDay, sessionAwards, computeMonthlyStandings, monthlyAwards, computePeriodStandings, STATISTICS_MIN_MATCHES } from './shared/standings.js';
 import { suggestRound } from './shared/scheduler.js';
 import { cleanName, nameKey } from './shared/names.js';
 
@@ -146,8 +146,57 @@ export class Store {
   // ---------- Players ----------
 
   async listPlayers() {
-    const rows = await this.all('SELECT id, name, archived FROM players ORDER BY archived, name COLLATE NOCASE');
-    return rows.map((r) => ({ id: Number(r.id), name: r.name, archived: !!Number(r.archived) }));
+    const rows = await this.all('SELECT id, name, archived, profile_photo FROM players ORDER BY archived, name COLLATE NOCASE');
+    return rows.map((r) => ({ id: Number(r.id), name: r.name, archived: !!Number(r.archived), photoUrl: this.photoUrl(r) }));
+  }
+
+  photoUrl(player) {
+    return player.profile_photo ? `/api/players/${Number(player.id)}/photo?v=${crypto.createHash('sha256').update(player.profile_photo).digest('hex').slice(0, 12)}` : null;
+  }
+
+  async playerPhoto(id) {
+    const p = await this.get('SELECT profile_photo FROM players WHERE id = ?', id);
+    if (!p?.profile_photo) throw new HttpError(404, 'No profile photo.');
+    const [, type, data] = p.profile_photo.match(/^data:(image\/(?:jpeg|png));base64,(.+)$/);
+    return { image: Buffer.from(data, 'base64'), type };
+  }
+
+  async savePlayerPhoto(id, photo) {
+    if (!(await this.get('SELECT id FROM players WHERE id = ?', id))) throw new HttpError(404, 'Player not found.');
+    if (photo !== null) {
+      const match = typeof photo === 'string' && photo.match(/^data:(image\/(?:jpeg|png));base64,([A-Za-z0-9+/]+={0,2})$/);
+      if (!match) throw new HttpError(400, 'Choose a JPEG or PNG photo.');
+      const data = Buffer.from(match[2], 'base64');
+      if (data.length > 160 * 1024) throw new HttpError(400, 'Photo is too large. Choose a smaller image.');
+      const valid = match[1] === 'image/png' ? data.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) : data.length > 4 && data[0] === 255 && data[1] === 216 && data.at(-2) === 255 && data.at(-1) === 217;
+      if (!valid) throw new HttpError(400, 'That photo is not a valid JPEG or PNG.');
+    }
+    await this.run('UPDATE players SET profile_photo = ? WHERE id = ?', photo, id);
+    const p = await this.get('SELECT id, name, profile_photo FROM players WHERE id = ?', id);
+    return { id: Number(p.id), name: p.name, photoUrl: this.photoUrl(p) };
+  }
+
+  async profileLink(id) {
+    const token = crypto.randomBytes(24).toString('hex');
+    const result = await this.run('UPDATE players SET profile_token = COALESCE(profile_token, ?) WHERE id = ?', token, id);
+    if (!result.changes) throw new HttpError(404, 'Player not found.');
+    return { token: (await this.get('SELECT profile_token FROM players WHERE id = ?', id)).profile_token };
+  }
+
+  async profileByToken(token) {
+    const p = await this.get('SELECT id, name, profile_photo FROM players WHERE profile_token = ?', token);
+    if (!p) throw new HttpError(404, 'This profile link is invalid. Ask the organizer for your link.');
+    return { id: Number(p.id), name: p.name, photoUrl: this.photoUrl(p) };
+  }
+
+  async statisticsShare() {
+    await this.run('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', 'statistics_share', crypto.randomBytes(24).toString('hex'));
+    return { token: (await this.get('SELECT value FROM settings WHERE key = ?', 'statistics_share')).value };
+  }
+
+  async checkStatisticsToken(token) {
+    const row = await this.get('SELECT value FROM settings WHERE key = ?', 'statistics_share');
+    if (!row || row.value !== token) throw new HttpError(404, 'This report link is invalid. Ask the organizer for a fresh link.');
   }
 
   async playerNames() {
@@ -181,8 +230,8 @@ export class Store {
       await this.run('UPDATE players SET name = ?, name_key = ? WHERE id = ?', checked.name, checked.key, id);
     }
     if (archived !== undefined) await this.run('UPDATE players SET archived = ? WHERE id = ?', archived ? 1 : 0, id);
-    const p = await this.get('SELECT id, name, archived FROM players WHERE id = ?', id);
-    return { id: Number(p.id), name: p.name, archived: !!Number(p.archived) };
+    const p = await this.get('SELECT id, name, archived, profile_photo FROM players WHERE id = ?', id);
+    return { id: Number(p.id), name: p.name, archived: !!Number(p.archived), photoUrl: this.photoUrl(p) };
   }
 
   // ---------- Days ----------
@@ -417,7 +466,8 @@ export class Store {
     return { month, sessionCount: sessions.length, standings, awards: monthlyAwards(standings) };
   }
 
-  async statisticsView(start, end) {
+  async statisticsView(start, end, ranking = 'percentage') {
+    if (!['percentage', 'wins'].includes(ranking)) throw new HttpError(400, 'Choose win percentage or matches won.');
     const allTime = !start && !end;
     const valid = (date) => /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(Date.parse(`${date}T12:00:00Z`)) && new Date(`${date}T12:00:00Z`).toISOString().slice(0, 10) === date;
     if (!allTime && (!valid(start) || !valid(end))) throw new HttpError(400, 'Choose valid start and end dates.');
@@ -427,7 +477,8 @@ export class Store {
       allTime, start: allTime ? sessions[0]?.date ?? null : start,
       end: allTime ? sessions.at(-1)?.date ?? null : end, sessionCount: sessions.length,
       completedMatches: sessions.reduce((n, s) => n + s.matches.filter((m) => m.status === 'completed' && m.score && ['A', 'B'].includes(m.winner)).length, 0),
-      standings: computePeriodStandings(players, sessions),
+      ranking, minimumMatches: STATISTICS_MIN_MATCHES,
+      standings: computePeriodStandings(players, sessions, ranking).map((r) => ({ ...r, photoUrl: players.find((p) => p.id === r.playerId)?.photoUrl ?? null })),
     };
   }
 
@@ -436,7 +487,7 @@ export class Store {
     const params = filter ? [start, end] : [];
     const [dayRows, playerRows, presentRows, matchRows] = await this.db.readMany([
       [`SELECT id, date, format FROM days ${filter} ORDER BY date, id`, ...params],
-      ['SELECT id, name FROM players'],
+      ['SELECT id, name, profile_photo FROM players'],
       [`SELECT day_id, player_id FROM day_players WHERE day_id IN (SELECT id FROM days ${filter})`, ...params],
       [`SELECT * FROM matches WHERE day_id IN (SELECT id FROM days ${filter}) ORDER BY seq`, ...params],
     ]);
@@ -448,7 +499,7 @@ export class Store {
       presentIds: presentBy.get(Number(day.id)) ?? [],
       matches: matchesBy.get(Number(day.id)) ?? [],
     }));
-    const players = playerRows.map((r) => ({ id: Number(r.id), name: r.name }));
+    const players = playerRows.map((r) => ({ id: Number(r.id), name: r.name, photoUrl: this.photoUrl(r) }));
     return { players, sessions };
   }
 
